@@ -1,17 +1,105 @@
 # YNB
 
-`YNB`는 동일 IPv4 LAN에서 RTSP 연결정보를 UDP broadcast로 전달하고,
-Receiver가 해당 RTSP endpoint에 `RTSP/2.0 OPTIONS` 요청을 보내
-접속 가능 여부를 확인하는 Python 패키지입니다.
+`YNB`는 동일 IPv4 LAN에서 RTSP 장비를 UDP broadcast로 발견하고,
+RTSP 연결정보를 전달받아 해당 RTSP/2.0 서버의 응답 여부를 확인하는
+Python 패키지입니다.
 
-현재 버전은 **0.0.1 PoC**이며 RTSP 영상 재생은 수행하지 않습니다.
+현재 버전은 **0.0.1 PoC**입니다.
 
 ## 환경
 
-- Python 3.11.9
-- IPv4 동일 broadcast domain
-- 외부 runtime dependency 없음
-- 기본 UDP port: `37020`
+* Python 3.11.9
+* RTSP 2.0
+* IPv4 동일 broadcast domain
+* 기본 UDP port: `37020`
+* 외부 runtime dependency 없음
+
+## 동작 방식
+
+YNB 0.0.1은 다음 순서로 동작합니다.
+
+```text
+Sender                         Receiver                    RTSP Server
+  |                               |                            |
+  |--- ADVERTISE broadcast ------>|                            |
+  |<------ ACK unicast -----------|                            |
+  |------- DETAIL unicast ------->|                            |
+  |<------ ACK unicast -----------|                            |
+  |                               |------- TCP connect ------->|
+  |                               |------- RTSP OPTIONS ------>|
+  |                               |<------ RTSP/2.0 2xx -------|
+```
+
+### 1. ADVERTISE
+
+Sender는 자신의 존재를 최소한의 정보만 포함하여 broadcast합니다.
+
+```json
+{
+  "message_type": "ADVERTISE",
+  "device_id": "DC:A6:32:12:34:56"
+}
+```
+
+0.0.1에서는 `device_id`로 MAC 주소를 사용합니다.
+
+### 2. ADVERTISE ACK
+
+Receiver는 ADVERTISE를 수신하면 해당 UDP 데이터그램의 실제 발신 주소로 ACK를 unicast합니다.
+
+```json
+{
+  "message_type": "ACK",
+  "device_id": "DC:A6:32:12:34:56",
+  "ack_for": "ADVERTISE"
+}
+```
+
+### 3. DETAIL
+
+Sender는 ACK를 보낸 Receiver의 주소로 실제 RTSP 연결정보를 unicast합니다.
+
+```json
+{
+  "message_type": "DETAIL",
+  "device_id": "DC:A6:32:12:34:56",
+  "ip": "192.168.0.10",
+  "rtsp_port": 8554,
+  "rtsp_path": "/stream"
+}
+```
+
+### 4. DETAIL ACK
+
+Receiver는 DETAIL을 정상적으로 수신하면 Sender에 ACK를 반환합니다.
+
+```json
+{
+  "message_type": "ACK",
+  "device_id": "DC:A6:32:12:34:56",
+  "ack_for": "DETAIL"
+}
+```
+
+### 5. RTSP 연결 확인
+
+Receiver는 DETAIL의 정보를 이용해 다음 URI를 구성합니다.
+
+```text
+rtsp://192.168.0.10:8554/stream
+```
+
+이후 TCP 연결을 생성하고 다음과 같은 RTSP/2.0 요청을 보냅니다.
+
+```text
+OPTIONS rtsp://192.168.0.10:8554/stream RTSP/2.0
+CSeq: 1
+
+```
+
+서버가 정상적인 RTSP/2.0 `2xx` 응답을 반환하면 연결 가능 상태로 판단합니다.
+
+`OPTIONS` 성공은 실제 영상 재생 성공을 의미하지 않습니다.
 
 ## 설치
 
@@ -22,40 +110,46 @@ python --version
 python -m pip install -e .
 ```
 
-`python --version`은 `Python 3.11.9`여야 합니다.
-
-## 동작 흐름
+Python 버전은 다음과 같아야 합니다.
 
 ```text
-Sender
-  |
-  | UDP broadcast
-  | device_id, ip, rtsp_port, rtsp_path
-  v
-Receiver
-  |
-  | TCP
-  | RTSP/2.0 OPTIONS
-  v
-RTSP Server
-  |
-  v
-Receiver가 결과 dict 반환
+Python 3.11.9
 ```
 
-## 사용
+## Python API
+
+패키지는 다음 형태로 사용합니다.
+
+```python
+from ynb import sender, receiver
+```
 
 ### Sender
+
+Sender는 한 번의 부트스트랩 교환을 수행합니다.
 
 ```python
 from ynb import sender
 
-sender.broadcast(
-    device_id="DC:A6:32:12:34:56",  //MAC address
+sender.advertise(
+    device_id="DC:A6:32:12:34:56",
     ip="192.168.0.10",
     rtsp_port=8554,
     rtsp_path="/stream",
+    timeout=5,
 )
+```
+
+`advertise()`는 다음 흐름을 수행합니다.
+
+```text
+ADVERTISE broadcast
+        ↓
+ADVERTISE ACK 수신
+        ↓
+DETAIL unicast
+        ↓
+DETAIL ACK 수신
 ```
 
 ### Receiver
@@ -81,9 +175,6 @@ print(device)
 }
 ```
 
-`rtsp_connected=True`는 RTSP 서버가 `RTSP/2.0 OPTIONS` 요청에 정상적인
-`2xx` 응답을 반환했다는 의미입니다. 실제 영상 재생 성공을 의미하지 않습니다.
-
 ## 패키지 구조
 
 ```text
@@ -94,22 +185,9 @@ src/ynb/
 └── connecter.py
 ```
 
-- `sender.py`: RTSP 연결정보 UDP broadcast
-- `receiver.py`: 광고 수신 및 발견 결과 반환
-- `connecter.py`: RTSP URI 생성 및 RTSP/2.0 probe
-
-## 0.0.1 메시지
-
-Sender는 다음 JSON 데이터를 하나의 UDP 데이터그램으로 전송합니다.
-
-```json
-{
-  "device_id"="DC:A6:32:12:34:56",  //MAC address
-  "ip": "192.168.0.10",
-  "rtsp_port": 8554,
-  "rtsp_path": "/stream"
-}
-```
+* `sender.py`: ADVERTISE 송신, ACK 수신, DETAIL 송신
+* `receiver.py`: ADVERTISE/DETAIL 수신, ACK 송신, 발견 결과 반환
+* `connecter.py`: RTSP URI 생성 및 RTSP/2.0 probe
 
 ## 테스트
 
@@ -117,24 +195,34 @@ Sender는 다음 JSON 데이터를 하나의 UDP 데이터그램으로 전송합
 python -m unittest discover -s tests -v
 ```
 
-최소한 다음을 검증합니다.
+최소한 다음 흐름을 검증합니다.
 
-- UDP 광고 송수신
-- RTSP/2.0 `OPTIONS` probe 성공/실패
-- Sender → Receiver → 가짜 RTSP 서버 전체 흐름
+```text
+ADVERTISE broadcast
+        ↓
+ACK unicast
+        ↓
+DETAIL unicast
+        ↓
+ACK unicast
+        ↓
+RTSP/2.0 OPTIONS
+        ↓
+rtsp_connected
+```
 
 ## 현재 범위 밖
 
 0.0.1에서는 다음 기능을 제공하지 않습니다.
 
-- ACK / DETAIL
-- `message_id`
-- 메시지 재전송 및 중복 제거
-- callback
-- 장비 registry
-- 비동기 probe 및 worker thread
-- RTSP 영상 재생
-- 인증 및 암호화
-- 다른 subnet 또는 인터넷을 통한 자동 발견
+* UDP 메시지 자동 재전송
+* `message_id`
+* 중복 및 재정렬 처리
+* callback
+* 장비 registry
+* 비동기 RTSP probe
+* RTSP 영상 재생
+* 인증 및 암호화
+* 다른 subnet 또는 인터넷을 통한 자동 발견
 
 상세 요구사항은 [`SRS.md`](SRS.md)를 참고하십시오.
