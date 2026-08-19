@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import json
+import socket
+import threading
+import unittest
+from unittest import mock
+
+from ynb import sender
+from ynb._protocol import decode_message
+
+from tests.support import free_udp_port
+
+
+DEVICE_ID = "DC:A6:32:12:34:56"
+
+
+class SenderTests(unittest.TestCase):
+    def test_advertise_uses_ack_peer_for_detail(self) -> None:
+        port = free_udp_port()
+        ready = threading.Event()
+        received: list[tuple[dict[str, object], tuple[str, int]]] = []
+        error: list[BaseException] = []
+
+        def responder() -> None:
+            try:
+                # ADVERTISE를 받는 discovery socket과 ACK를 보내는 socket의
+                # port를 다르게 만든다. Sender가 설정 port를 추측하지 않고
+                # recvfrom()의 실제 ACK peer를 쓰는지 검증하기 위해서다.
+                with (
+                    socket.socket(
+                        socket.AF_INET, socket.SOCK_DGRAM
+                    ) as discovery_socket,
+                    socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as ack_socket,
+                ):
+                    discovery_socket.bind(("127.0.0.1", port))
+                    discovery_socket.settimeout(2.0)
+                    ack_socket.bind(("127.0.0.1", 0))
+                    ack_socket.settimeout(2.0)
+                    ready.set()
+                    payload, peer = discovery_socket.recvfrom(65_535)
+                    received.append((json.loads(payload), peer))
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "device_id": DEVICE_ID,
+                                "ack_for": [],
+                            }
+                        ).encode(),
+                        peer,
+                    )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "device_id": DEVICE_ID,
+                                "ack_for": "ADVERTISE",
+                            }
+                        ).encode(),
+                        peer,
+                    )
+                    payload, detail_peer = ack_socket.recvfrom(65_535)
+                    received.append((json.loads(payload), detail_peer))
+
+                    # DETAIL ACK처럼 보이는 패킷을 다른 port에서 먼저 보낸다.
+                    # Sender는 최초 ACK peer와 다르므로 이를 무시해야 한다.
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as impostor:
+                        impostor.sendto(
+                            json.dumps(
+                                {
+                                    "message_type": "ACK",
+                                    "device_id": DEVICE_ID,
+                                    "ack_for": "DETAIL",
+                                }
+                            ).encode(),
+                            detail_peer,
+                        )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "device_id": DEVICE_ID,
+                                "ack_for": "DETAIL",
+                            }
+                        ).encode(),
+                        detail_peer,
+                    )
+            except BaseException as exc:
+                error.append(exc)
+                ready.set()
+
+        thread = threading.Thread(target=responder, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(1.0))
+        succeeded = sender.advertise(
+            DEVICE_ID,
+            "127.0.0.1",
+            8554,
+            "/stream",
+            timeout=1.5,
+            start_port=port,
+            broadcast_address="127.0.0.1",
+        )
+        thread.join(2.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(error, [])
+        self.assertTrue(succeeded)
+        self.assertEqual(
+            received[0][0],
+            {"message_type": "ADVERTISE", "device_id": DEVICE_ID},
+        )
+        self.assertEqual(
+            received[1][0],
+            {
+                "message_type": "DETAIL",
+                "device_id": DEVICE_ID,
+                "ip": "127.0.0.1",
+                "rtsp_port": 8554,
+                "rtsp_path": "/stream",
+            },
+        )
+        self.assertEqual(received[0][1], received[1][1])
+
+    def test_detail_ack_from_other_peer_is_ignored(self) -> None:
+        """다른 UDP port의 DETAIL ACK만 오면 교환은 성공하지 않아야 한다."""
+
+        port = free_udp_port()
+        ready = threading.Event()
+        error: list[BaseException] = []
+
+        def responder() -> None:
+            try:
+                with (
+                    socket.socket(
+                        socket.AF_INET, socket.SOCK_DGRAM
+                    ) as discovery_socket,
+                    socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as ack_socket,
+                ):
+                    discovery_socket.bind(("127.0.0.1", port))
+                    discovery_socket.settimeout(1.0)
+                    ack_socket.bind(("127.0.0.1", 0))
+                    ack_socket.settimeout(1.0)
+                    ready.set()
+
+                    _advertisement, sender_peer = discovery_socket.recvfrom(65_535)
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "device_id": DEVICE_ID,
+                                "ack_for": "ADVERTISE",
+                            }
+                        ).encode(),
+                        sender_peer,
+                    )
+                    _detail, sender_peer = ack_socket.recvfrom(65_535)
+
+                    # 내용은 맞지만 최초 ACK peer와 port가 다른 위조 ACK다.
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as impostor:
+                        impostor.sendto(
+                            json.dumps(
+                                {
+                                    "message_type": "ACK",
+                                    "device_id": DEVICE_ID,
+                                    "ack_for": "DETAIL",
+                                }
+                            ).encode(),
+                            sender_peer,
+                        )
+            except BaseException as exc:
+                error.append(exc)
+                ready.set()
+
+        thread = threading.Thread(target=responder, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(1.0))
+        succeeded = sender.advertise(
+            DEVICE_ID,
+            "127.0.0.1",
+            8554,
+            "/stream",
+            timeout=0.2,
+            start_port=port,
+            broadcast_address="127.0.0.1",
+        )
+        thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(error, [])
+        self.assertFalse(succeeded)
+
+    def test_default_destination_is_udp_broadcast(self) -> None:
+        """기본 ADVERTISE가 limited broadcast 주소로 향하는지 검사한다."""
+
+        udp_socket = mock.MagicMock()
+        socket_context = mock.MagicMock()
+        socket_context.__enter__.return_value = udp_socket
+        socket_context.__exit__.return_value = False
+
+        with mock.patch("ynb.sender.socket.socket", return_value=socket_context):
+            succeeded = sender.advertise(
+                DEVICE_ID,
+                "127.0.0.1",
+                8554,
+                "/stream",
+                timeout=0,
+            )
+
+        self.assertFalse(succeeded)
+        udp_socket.setsockopt.assert_called_once_with(
+            socket.SOL_SOCKET, socket.SO_BROADCAST, 1
+        )
+        udp_socket.bind.assert_called_once_with(("0.0.0.0", 0))
+        first_payload, first_target = udp_socket.sendto.call_args_list[0].args
+        self.assertEqual(first_target, ("255.255.255.255", 37_020))
+        self.assertEqual(
+            decode_message(first_payload),
+            {"message_type": "ADVERTISE", "device_id": DEVICE_ID},
+        )
+
+    def test_platform_timeout_overflow_returns_false(self) -> None:
+        """UDP socket이 큰 timeout을 거부해도 False로 끝나야 한다."""
+
+        udp_socket = mock.MagicMock()
+        udp_socket.settimeout.side_effect = OverflowError("timeout is too large")
+        socket_context = mock.MagicMock()
+        socket_context.__enter__.return_value = udp_socket
+        socket_context.__exit__.return_value = False
+
+        with mock.patch("ynb.sender.socket.socket", return_value=socket_context):
+            self.assertFalse(
+                sender.advertise(
+                    DEVICE_ID,
+                    "127.0.0.1",
+                    8554,
+                    "/stream",
+                    timeout=1e308,
+                    broadcast_address="127.0.0.1",
+                )
+            )
+
+    def test_invalid_configuration_is_rejected_before_socket_creation(self) -> None:
+        with mock.patch("ynb.sender.socket.socket") as socket_factory:
+            with self.assertRaises(ValueError):
+                sender.advertise("bad-device", "127.0.0.1", 8554, "/stream")
+        socket_factory.assert_not_called()
+
+        with mock.patch("ynb.sender.socket.socket") as socket_factory:
+            with self.assertRaises(ValueError):
+                sender.advertise(DEVICE_ID, "127.0.0.1", 8554, "/\ud800")
+        socket_factory.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()
