@@ -91,8 +91,9 @@ PowerShell을 사용해도 됩니다. 다만 `.\.venv\Scripts\Activate.ps1`은
 실행 정책에 따라 `running scripts is disabled on this system` 또는
 `이 시스템에서 스크립트를 실행할 수 없습니다`와 같은 오류로 차단될
 수 있습니다. 실행 정책을 변경하지 않으려면 가상환경을 활성화하지 않고
-그 안의 Python을 직접 실행하면 됩니다. `$Py`는 그 Python 경로를
-저장하는 PowerShell 변수입니다.
+그 안의 `python.exe`를 직접 실행하면 됩니다. 아래 명령은 PowerShell
+세션 변수에 의존하지 않으므로 새 PowerShell 창에서도 그대로 사용할 수
+있습니다.
 
 ```powershell
 Set-Location 'C:\path\to\YNBro'
@@ -100,9 +101,8 @@ Set-Location 'C:\path\to\YNBro'
 python --version
 python -m venv .venv
 
-$Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
-& $Py -m pip install -e .
-& $Py -c "import ynb; from ynb import sender, receiver; print(ynb.__version__)"
+& .\.venv\Scripts\python.exe -m pip install -e .
+& .\.venv\Scripts\python.exe -c "import ynb; from ynb import sender, receiver; print(ynb.__version__)"
 ```
 
 첫 설치에서는 build dependency인 `setuptools>=69`를 Python package index에서
@@ -116,12 +116,12 @@ $Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
 0.0.1
 ```
 
-새 PowerShell 창을 열 때마다 실제 프로젝트 경로로 이동해 다음 블록을
-다시 실행하면 이 README의 `$Py` 명령을 계속 사용할 수 있습니다.
+가상환경을 이미 활성화해 PowerShell 프롬프트 앞에 `(.venv)`가 보인다면
+`.\.venv\Scripts\python.exe` 대신 `python`으로 줄여 써도 됩니다.
 
 ```powershell
 Set-Location 'C:\path\to\YNBro'
-$Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
+python -c "import sys; print(sys.executable)"
 ```
 
 ### 2.3 Linux 또는 macOS 계열 셸
@@ -165,7 +165,7 @@ python -m unittest discover -s tests -v
 PowerShell에서는 다음과 같습니다.
 
 ```powershell
-& $Py -m unittest discover -s tests -v
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 일반 셸에서는 다음과 같습니다.
@@ -183,7 +183,7 @@ PowerShell에서는 다음과 같습니다.
 End-to-End 테스트만 실행합니다.
 
 ```powershell
-& $Py -m unittest tests.test_e2e -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_e2e -v
 ```
 
 ```sh
@@ -208,8 +208,8 @@ ADVERTISE → ACK → DETAIL → ACK → RTSP/2.0 OPTIONS → 결과 dict
 2. 터미널 B에서 Receiver를 실행합니다.
 3. Receiver가 기다리는 동안 터미널 C에서 Sender를 실행합니다.
 
-모든 터미널에서 먼저 프로젝트 루트로 이동하고 `$Py` 또는 `$PY`를
-설정하십시오.
+모든 터미널에서 먼저 프로젝트 루트로 이동하십시오. PowerShell은
+`.\.venv\Scripts\python.exe`를 직접 사용하고, 일반 셰에서는 `$PY`를 사용합니다.
 
 ### 4.1 터미널 A: 테스트용 RTSP/2.0 서버
 
@@ -261,8 +261,13 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         print("fake RTSP server stopped")
 '@
 
-$FakeRtspCode | & $Py -
+$FakeRtspCode | & .\.venv\Scripts\python.exe -
 ```
+
+PowerShell 프롬프트 앞에 `(.venv)`가 보이는 활성화 상태에서는 마지막
+명령을 `$FakeRtspCode | python -`으로 실행해도 같습니다. `$Py`는
+PowerShell이 자동으로 만드는 변수가 아니므로 사전에 직접 설정하지 않았다면
+`$FakeRtspCode | & $Py -`를 사용하면 안 됩니다.
 
 일반 셸:
 
@@ -314,7 +319,7 @@ PY
 PowerShell:
 
 ```powershell
-& $Py -c "from pprint import pprint; from ynb import receiver; pprint(receiver.discover(timeout=30, start_port=37020, bind_host='127.0.0.1'))"
+& .\.venv\Scripts\python.exe -c "from pprint import pprint; from ynb import receiver; pprint(receiver.discover(timeout=30, start_port=37020, bind_host='127.0.0.1'))"
 ```
 
 일반 셸:
@@ -331,7 +336,7 @@ Receiver는 최대 30초 동안 기다립니다. 이 시간이 지나기 전에 
 PowerShell:
 
 ```powershell
-& $Py -c "from ynb import sender; print(sender.advertise(device_id='02:00:00:00:00:01', ip='127.0.0.1', rtsp_port=8554, rtsp_path='/stream', timeout=10, start_port=37020, broadcast_address='127.0.0.1', bind_host='127.0.0.1'))"
+& .\.venv\Scripts\python.exe -c "from ynb import sender; print(sender.advertise(device_id='02:00:00:00:00:01', ip='127.0.0.1', rtsp_port=8554, rtsp_path='/stream', timeout=10, start_port=37020, broadcast_address='127.0.0.1', bind_host='127.0.0.1'))"
 ```
 
 일반 셸:
@@ -429,7 +434,7 @@ directed broadcast 주소는 임의로 마지막 octet을 255로 정하지 말�
 prefix로 계산합니다.
 
 ```powershell
-& $Py -c "import ipaddress; print(ipaddress.ip_interface('192.168.1.10/24').network.broadcast_address)"
+& .\.venv\Scripts\python.exe -c "import ipaddress; print(ipaddress.ip_interface('192.168.1.10/24').network.broadcast_address)"
 ```
 
 ```sh
@@ -466,7 +471,7 @@ result = receiver.discover(
 pprint(result)
 '@
 
-$ReceiverCode | & $Py -
+$ReceiverCode | & .\.venv\Scripts\python.exe -
 ```
 
 일반 셸:
@@ -514,7 +519,7 @@ acknowledged = sender.advertise(
 print("DETAIL ACK received:", acknowledged)
 '@
 
-$SenderCode | & $Py -
+$SenderCode | & .\.venv\Scripts\python.exe -
 ```
 
 일반 셸:
@@ -734,7 +739,7 @@ User-Agent: ynb/0.0.1
 UDP 발견과 분리해 RTSP probe만 검사하려면 다음 명령을 사용합니다.
 
 ```powershell
-& $Py -c "from ynb.connecter import probe_rtsp; print(probe_rtsp('192.168.1.10', 8554, '/stream', timeout=5))"
+& .\.venv\Scripts\python.exe -c "from ynb.connecter import probe_rtsp; print(probe_rtsp('192.168.1.10', 8554, '/stream', timeout=5))"
 ```
 
 ```sh
@@ -871,10 +876,11 @@ Receiver는 호출 한 번에 장비 한 대만 반환합니다.
 ### `ModuleNotFoundError: No module named 'ynb'`
 
 패키지를 설치한 Python과 실행 중인 Python이 다를 가능성이 큽니다. 모든
-명령에서 Windows의 `$Py` 또는 일반 셸의 `$PY`를 사용하고 다음을 확인합니다.
+명령에서 Windows의 `.\.venv\Scripts\python.exe` 또는 일반 셸의 `$PY`를
+사용하고 다음을 확인합니다.
 
 ```powershell
-& $Py -c "import sys, ynb; print(sys.executable); print(ynb.__file__)"
+& .\.venv\Scripts\python.exe -c "import sys, ynb; print(sys.executable); print(ynb.__file__)"
 ```
 
 설치 중 `Could not find a version that satisfies the requirement setuptools>=69`
@@ -951,17 +957,17 @@ lsof -nP -iTCP:8554 -sTCP:LISTEN
 전체 테스트:
 
 ```powershell
-& $Py -m unittest discover -s tests -v
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 영역별 테스트:
 
 ```powershell
-& $Py -m unittest tests.test_protocol -v
-& $Py -m unittest tests.test_sender -v
-& $Py -m unittest tests.test_receiver -v
-& $Py -m unittest tests.test_connecter -v
-& $Py -m unittest tests.test_e2e -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_protocol -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_sender -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_receiver -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_connecter -v
+& .\.venv\Scripts\python.exe -m unittest tests.test_e2e -v
 ```
 
 | 파일 | 검사 대상 |
