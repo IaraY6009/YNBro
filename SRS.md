@@ -17,39 +17,46 @@
 
 ### 2.1 목적
 
-시스템은 동일 IPv4 LAN에 있는 송신 장비가 광고하는 RTSP 연결정보를 UDP broadcast로 수신하고, 해당 RTSP endpoint가 RTSP 2.0 요청에 응답하는지 확인한 뒤, 결과를 Python `dict`로 제공하여야 한다.
+시스템은 동일 IPv4 LAN에서 UDP broadcast를 통해 송신 장비를 발견하고, 수신기와 최소한의 UDP 정보 교환을 수행한 뒤 전달받은 RTSP endpoint가 RTSP 2.0 요청에 응답하는지 확인하여야 한다.
 
-### 2.2 시스템 성격
+최종 결과는 Python `dict`로 제공하여야 한다.
 
-이 시스템은 RTSP 서버나 RTSP 재생기를 구현하지 않는다.
+### 2.2 기본 동작
 
-0.0.1 버전의 목적은 다음 최소 흐름이 실제 환경에서 동작하는지 검증하는 것이다.
+0.0.1은 다음 흐름을 구현한다.
 
 ```text
-Sender
-  |
-  | UDP broadcast
-  | RTSP 연결정보
-  v
-Receiver
-  |
-  | TCP connection
-  | RTSP/2.0 OPTIONS
-  v
-RTSP Server
-  |
-  v
-Receiver가 결과 dict 반환
+Sender                         Receiver                    RTSP Server
+  |                               |                            |
+  |--- ADVERTISE broadcast ------>|                            |
+  |                               |                            |
+  |<------ ACK unicast -----------|                            |
+  |                               |                            |
+  |------- DETAIL unicast ------->|                            |
+  |                               |                            |
+  |<------ ACK unicast -----------|                            |
+  |                               |                            |
+  |                               |------- TCP connect ------->|
+  |                               |------- RTSP OPTIONS ------>|
+  |                               |<------ RTSP/2.0 2xx -------|
+  |                               |                            |
 ```
+
+각 단계의 의미는 다음과 같다.
+
+1. Sender가 자신의 존재를 `ADVERTISE`로 broadcast한다.
+2. Receiver가 `ADVERTISE`를 수신하면 Sender의 UDP peer 주소로 ACK를 unicast한다.
+3. Sender는 ACK를 보낸 Receiver의 주소로 RTSP 연결정보를 포함한 `DETAIL`을 unicast한다.
+4. Receiver는 유효한 `DETAIL`을 수신하면 Sender에 ACK를 unicast한다.
+5. Receiver는 DETAIL에 포함된 RTSP endpoint로 RTSP/2.0 연결을 확인한다.
+6. Receiver는 결과를 Python `dict`로 반환한다.
 
 ### 2.3 범위 제외
 
 0.0.1에서는 다음 기능을 구현하지 않는다.
 
-* `ACK`
-* `DETAIL`
-* `message_id`
 * 메시지 재전송
+* `message_id`
 * 중복 메시지 제거
 * UDP 패킷 재정렬 처리
 * 장비 상태 registry
@@ -59,7 +66,8 @@ Receiver가 결과 dict 반환
 * worker thread 또는 thread pool
 * context manager
 * 장비 자동 만료 또는 삭제
-* 사용자 인증, 메시지 인증 및 암호화
+* 사용자 인증
+* 메시지 인증 및 암호화
 * RTSP `DESCRIBE`, `SETUP`, `PLAY`, `TEARDOWN`
 * RTP/RTCP 수신
 * 영상·음성 디코딩 및 재생
@@ -68,14 +76,15 @@ Receiver가 결과 dict 반환
 
 ## 3. 용어
 
-| 용어         | 정의                                                     |
-| ---------- | ------------------------------------------------------ |
-| Sender     | 자신의 RTSP 연결정보를 UDP broadcast로 광고하는 측                   |
-| Receiver   | 광고를 수신하고 RTSP 연결 가능 여부를 확인하는 측                         |
-| device ID  | 송신 장비를 식별하는 값. 0.0.1에서는 네트워크 인터페이스의 MAC 주소를 사용         |
-| endpoint   | `(ip, rtsp_port, rtsp_path)`로 구성되는 RTSP 접속정보           |
-| probe      | 광고된 endpoint에 RTSP/2.0 `OPTIONS` 요청을 보내 응답 여부를 확인하는 작업 |
-| start port | UDP 광고를 송수신하는 포트. 기본값은 `37020`                         |
+| 용어         | 정의                                                 |
+| ---------- | -------------------------------------------------- |
+| Sender     | 자신의 존재와 RTSP 연결정보를 제공하는 측                          |
+| Receiver   | Sender를 발견하고 RTSP 연결 가능 여부를 확인하는 측                 |
+| device ID  | Sender를 식별하는 값. 0.0.1에서는 MAC 주소를 사용                |
+| peer       | UDP 데이터그램의 실제 발신 `(ip, port)`                      |
+| endpoint   | `(ip, rtsp_port, rtsp_path)`로 구성되는 RTSP 접속정보       |
+| probe      | endpoint에 RTSP/2.0 `OPTIONS` 요청을 보내 응답 여부를 확인하는 작업 |
+| start port | UDP 부트스트랩 메시지를 송수신하는 포트. 기본값은 `37020`              |
 
 ## 4. 실행 환경과 제약
 
@@ -84,31 +93,80 @@ Receiver가 결과 dict 반환
 | CON-001 | 시스템은 Python 3.11.9에서 설치 및 실행 가능하여야 한다.          |
 | CON-002 | runtime 기능은 Python 표준 라이브러리만 사용하여야 한다.          |
 | CON-003 | 자동 발견은 IPv4 동일 broadcast domain에서 수행하여야 한다.     |
-| CON-004 | 최초 연결정보 전달은 UDP broadcast를 사용하여야 한다.            |
-| CON-005 | wire 데이터는 하나의 UDP 데이터그램에 담긴 UTF-8 JSON 객체여야 한다. |
-| CON-006 | RTSP 확인은 RTSP 2.0을 대상으로 하여야 한다.                 |
+| CON-004 | 최초 ADVERTISE는 UDP broadcast를 사용하여야 한다.          |
+| CON-005 | ACK와 DETAIL은 UDP unicast를 사용하여야 한다.             |
+| CON-006 | wire 데이터는 하나의 UDP 데이터그램에 담긴 UTF-8 JSON 객체여야 한다. |
+| CON-007 | RTSP 연결 확인은 RTSP 2.0을 대상으로 하여야 한다.              |
 
 ## 5. Wire 데이터 요구사항
 
-### 5.1 ADVERTISE 메시지
+0.0.1에서는 다음 세 종류의 메시지를 사용한다.
 
-0.0.1에서는 `ADVERTISE` 메시지 한 종류만 사용한다.
+* `ADVERTISE`
+* `ACK`
+* `DETAIL`
 
-메시지는 다음 필드를 포함하여야 한다.
+### 5.1 ADVERTISE
 
-| 필드          | 타입      | 설명                         |
-| ----------- | ------- | -------------------------- |
-| `device_id` | string  | 송신 장비 네트워크 인터페이스의 MAC 주소   |
-| `ip`        | string  | RTSP 서버의 IPv4 주소           |
-| `rtsp_port` | integer | RTSP 서버 TCP 포트, `1..65535` |
-| `rtsp_path` | string  | `/`로 시작하는 RTSP 경로          |
-
-`device_id`는 `AA:BB:CC:DD:EE:FF` 형태의 MAC 주소 문자열을 사용한다.
-
-메시지 예시는 다음과 같다.
+Sender가 자신의 존재를 알리기 위한 최소 광고 메시지이다.
 
 ```json
 {
+  "message_type": "ADVERTISE",
+  "device_id": "DC:A6:32:12:34:56"
+}
+```
+
+| 필드             | 타입     | 설명              |
+| -------------- | ------ | --------------- |
+| `message_type` | string | 정확히 `ADVERTISE` |
+| `device_id`    | string | Sender의 MAC 주소  |
+
+`device_id`는 `AA:BB:CC:DD:EE:FF` 형식의 MAC 주소 문자열을 사용한다.
+
+ADVERTISE에는 RTSP endpoint 정보를 포함하지 않는다.
+
+### 5.2 ACK
+
+수신한 메시지를 확인하기 위한 메시지이다.
+
+ADVERTISE에 대한 ACK:
+
+```json
+{
+  "message_type": "ACK",
+  "device_id": "DC:A6:32:12:34:56",
+  "ack_for": "ADVERTISE"
+}
+```
+
+DETAIL에 대한 ACK:
+
+```json
+{
+  "message_type": "ACK",
+  "device_id": "DC:A6:32:12:34:56",
+  "ack_for": "DETAIL"
+}
+```
+
+| 필드             | 타입     | 설명                       |
+| -------------- | ------ | ------------------------ |
+| `message_type` | string | 정확히 `ACK`                |
+| `device_id`    | string | ACK 대상 Sender의 device ID |
+| `ack_for`      | string | `ADVERTISE` 또는 `DETAIL`  |
+
+ACK는 UDP 데이터그램을 실제로 보낸 peer 주소로 unicast하여야 한다.
+
+ACK는 RTSP 연결 성공을 의미하지 않는다.
+
+### 5.3 DETAIL
+
+Sender가 Receiver에게 실제 RTSP 접속정보를 전달하기 위한 메시지이다.
+
+```json
+{
+  "message_type": "DETAIL",
   "device_id": "DC:A6:32:12:34:56",
   "ip": "192.168.0.10",
   "rtsp_port": 8554,
@@ -116,61 +174,74 @@ Receiver가 결과 dict 반환
 }
 ```
 
+| 필드             | 타입      | 설명                      |
+| -------------- | ------- | ----------------------- |
+| `message_type` | string  | 정확히 `DETAIL`            |
+| `device_id`    | string  | Sender의 MAC 주소          |
+| `ip`           | string  | RTSP 서버의 IPv4 주소        |
+| `rtsp_port`    | integer | RTSP TCP 포트, `1..65535` |
+| `rtsp_path`    | string  | `/`로 시작하는 RTSP 경로       |
+
 ## 6. 기능 요구사항
 
 ### 6.1 Sender
 
-| ID         | 요구사항                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------- |
-| FR-SND-001 | Sender는 MAC 주소를 `device_id`로 사용하고, `ip`, `rtsp_port`, `rtsp_path`와 함께 JSON 메시지를 생성하여야 한다. |
-| FR-SND-002 | Sender는 생성한 메시지를 UTF-8 bytes로 직렬화하여야 한다.                                                  |
-| FR-SND-003 | Sender는 메시지를 설정된 UDP start port로 broadcast하여야 한다.                                         |
-| FR-SND-004 | 잘못된 MAC 주소, IPv4 주소, RTSP port 또는 RTSP path는 전송 전에 거부하여야 한다.                              |
+| ID         | 요구사항                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| FR-SND-001 | Sender는 `device_id`를 포함한 ADVERTISE 메시지를 생성하여야 한다.                                            |
+| FR-SND-002 | Sender는 ADVERTISE를 설정된 UDP start port로 broadcast하여야 한다.                                      |
+| FR-SND-003 | Sender는 ADVERTISE 전송 후 ACK를 수신할 수 있어야 한다.                                                    |
+| FR-SND-004 | `ack_for="ADVERTISE"`인 유효한 ACK를 수신하면 해당 ACK의 peer 주소를 Receiver 주소로 사용하여야 한다.                 |
+| FR-SND-005 | Sender는 해당 Receiver에 `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 포함한 DETAIL을 unicast하여야 한다. |
+| FR-SND-006 | Sender는 DETAIL에 대한 `ack_for="DETAIL"` ACK를 수신할 수 있어야 한다.                                     |
+| FR-SND-007 | 잘못된 MAC 주소, IPv4 주소, RTSP port 또는 RTSP path는 네트워크 전송 전에 거부하여야 한다.                            |
 
 ### 6.2 Receiver
 
-| ID         | 요구사항                                                              |
-| ---------- | ----------------------------------------------------------------- |
-| FR-RCV-001 | Receiver는 설정된 UDP start port에서 ADVERTISE 메시지를 수신하여야 한다.           |
-| FR-RCV-002 | Receiver는 수신한 UDP payload를 UTF-8 JSON 객체로 역직렬화하여야 한다.             |
-| FR-RCV-003 | Receiver는 필수 필드와 MAC 주소 및 endpoint 값이 유효한지 확인하여야 한다.              |
-| FR-RCV-004 | 유효한 메시지를 수신하면 광고된 endpoint에 RTSP probe를 수행하여야 한다.                 |
-| FR-RCV-005 | `discover(timeout)`은 지정된 시간 안에 유효한 광고를 수신하지 못하면 결과 없음으로 종료하여야 한다. |
-| FR-RCV-006 | 잘못된 UDP 입력은 Receiver 전체를 종료시키지 않아야 한다.                            |
+| ID         | 요구사항                                                                           |
+| ---------- | ------------------------------------------------------------------------------ |
+| FR-RCV-001 | Receiver는 설정된 UDP start port에서 ADVERTISE를 수신하여야 한다.                            |
+| FR-RCV-002 | Receiver는 유효한 ADVERTISE를 수신하면 데이터그램의 실제 peer 주소로 ADVERTISE ACK를 unicast하여야 한다. |
+| FR-RCV-003 | Receiver는 ACK를 보낸 Sender로부터 DETAIL을 수신하여야 한다.                                  |
+| FR-RCV-004 | Receiver는 DETAIL의 `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 검증하여야 한다.       |
+| FR-RCV-005 | Receiver는 유효한 DETAIL을 수신하면 Sender의 peer 주소로 DETAIL ACK를 unicast하여야 한다.         |
+| FR-RCV-006 | DETAIL ACK 전송 후 광고된 endpoint에 RTSP probe를 수행하여야 한다.                            |
+| FR-RCV-007 | `discover(timeout)`은 지정된 시간 안에 정상적인 정보 교환이 완료되지 않으면 결과 없음으로 종료하여야 한다.          |
+| FR-RCV-008 | 잘못된 UDP 입력은 Receiver 전체를 종료시키지 않아야 한다.                                         |
 
-### 6.3 RTSP probe
+## 7. RTSP probe 요구사항
 
-| ID          | 요구사항                                                             |
-| ----------- | ---------------------------------------------------------------- |
-| FR-RTSP-001 | 시스템은 endpoint를 `rtsp://<ip>:<port><path>` 형태의 URI로 구성하여야 한다.     |
-| FR-RTSP-002 | probe는 광고된 IP와 RTSP port로 TCP 연결을 시도하여야 한다.                      |
-| FR-RTSP-003 | TCP 연결 성공 후 광고된 URI에 `OPTIONS ... RTSP/2.0` 요청을 전송하여야 한다.        |
-| FR-RTSP-004 | 요청에는 `CSeq` header를 포함하여야 한다.                                    |
-| FR-RTSP-005 | 응답 status line이 `RTSP/2.0`이고 상태 코드가 `2xx`이면 probe 성공으로 판단하여야 한다. |
-| FR-RTSP-006 | timeout, 연결 거부 또는 잘못된 RTSP 응답은 probe 실패로 처리하여야 한다.               |
-| FR-RTSP-007 | RTSP probe 실패는 처리되지 않은 예외로 Receiver 외부에 전파되지 않아야 한다.             |
+| ID          | 요구사항                                                                 |
+| ----------- | -------------------------------------------------------------------- |
+| FR-RTSP-001 | 시스템은 DETAIL의 endpoint를 `rtsp://<ip>:<port><path>` 형태의 URI로 구성하여야 한다. |
+| FR-RTSP-002 | Receiver는 DETAIL의 IP와 RTSP port로 TCP 연결을 시도하여야 한다.                   |
+| FR-RTSP-003 | TCP 연결 성공 후 해당 URI에 `OPTIONS ... RTSP/2.0` 요청을 전송하여야 한다.             |
+| FR-RTSP-004 | 요청에는 `CSeq` header를 포함하여야 한다.                                        |
+| FR-RTSP-005 | 응답 status line이 `RTSP/2.0`이고 상태 코드가 `2xx`이면 probe 성공으로 판단하여야 한다.     |
+| FR-RTSP-006 | timeout, 연결 거부 또는 잘못된 RTSP 응답은 probe 실패로 처리하여야 한다.                   |
+| FR-RTSP-007 | RTSP probe 실패는 처리되지 않은 예외로 Receiver 외부에 전파되지 않아야 한다.                 |
 
-### 6.4 공개 Python API
+## 8. 공개 Python API
 
-| ID         | 요구사항                                                                                |
-| ---------- | ----------------------------------------------------------------------------------- |
-| FR-API-001 | 패키지는 `from ynb import sender, receiver` 형태의 import를 지원하여야 한다.                       |
-| FR-API-002 | `sender.py`는 최소 한 번의 UDP 광고를 수행하는 공개 기능을 제공하여야 한다.                                  |
-| FR-API-003 | `receiver.py`는 `discover(timeout)` 형태의 발견 기능을 제공하여야 한다.                             |
-| FR-API-004 | 공통 RTSP URI 생성 및 probe 기능은 `connecter.py`에 배치하여 sender 또는 receiver에서 재사용할 수 있어야 한다. |
+| ID         | 요구사항                                                                  |
+| ---------- | --------------------------------------------------------------------- |
+| FR-API-001 | 패키지는 `from ynb import sender, receiver` 형태의 import를 지원하여야 한다.         |
+| FR-API-002 | `sender.py`는 ADVERTISE → ACK → DETAIL → ACK 교환을 수행하는 공개 기능을 제공하여야 한다. |
+| FR-API-003 | `receiver.py`는 `discover(timeout)` 형태의 발견 기능을 제공하여야 한다.               |
+| FR-API-004 | RTSP URI 생성과 RTSP probe 기능은 `connecter.py`에 배치하여야 한다.                 |
 
-## 7. 결과 데이터 요구사항
+## 9. 결과 데이터 요구사항
 
-Receiver가 유효한 광고를 수신한 경우 다음 형태의 Python `dict`를 반환하여야 한다.
+Receiver는 DETAIL 수신과 RTSP probe를 완료한 경우 다음 형태의 Python `dict`를 반환하여야 한다.
 
-| 키                | 타입      | 설명                |
-| ---------------- | ------- | ----------------- |
-| `device_id`      | string  | 광고된 송신 장비의 MAC 주소 |
-| `ip`             | string  | 광고된 IPv4 주소       |
-| `rtsp_port`      | integer | 광고된 RTSP port     |
-| `rtsp_path`      | string  | 광고된 RTSP path     |
-| `rtsp_uri`       | string  | 조합된 RTSP URI      |
-| `rtsp_connected` | boolean | RTSP probe 결과     |
+| 키                | 타입      | 설명              |
+| ---------------- | ------- | --------------- |
+| `device_id`      | string  | Sender의 MAC 주소  |
+| `ip`             | string  | RTSP 서버 IPv4 주소 |
+| `rtsp_port`      | integer | RTSP TCP port   |
+| `rtsp_path`      | string  | RTSP path       |
+| `rtsp_uri`       | string  | 조합된 RTSP URI    |
+| `rtsp_connected` | boolean | RTSP probe 결과   |
 
 예:
 
@@ -185,22 +256,54 @@ Receiver가 유효한 광고를 수신한 경우 다음 형태의 Python `dict`�
 }
 ```
 
-## 8. 최소 테스트 요구사항
+## 10. 최소 테스트 요구사항
 
-### 8.1 UDP 송수신 테스트
+### 10.1 ADVERTISE / ACK 테스트
 
-Sender가 전송한 ADVERTISE 메시지를 Receiver가 수신하고 다음 값이 동일한지 확인하여야 한다.
+다음을 검증하여야 한다.
+
+```text
+Sender
+  |
+  | ADVERTISE broadcast
+  v
+Receiver
+  |
+  | ACK unicast
+  v
+Sender
+```
+
+Receiver가 받은 `device_id`가 Sender가 전송한 MAC 주소와 동일하여야 한다.
+
+Sender는 ACK를 보낸 Receiver의 UDP peer 주소를 확인할 수 있어야 한다.
+
+### 10.2 DETAIL / ACK 테스트
+
+다음을 검증하여야 한다.
+
+```text
+Sender
+  |
+  | DETAIL unicast
+  v
+Receiver
+  |
+  | ACK unicast
+  v
+Sender
+```
+
+Receiver가 받은 다음 값이 Sender가 보낸 값과 동일하여야 한다.
 
 * `device_id`
 * `ip`
 * `rtsp_port`
 * `rtsp_path`
 
-`device_id`는 송신 시 사용한 MAC 주소와 동일하여야 한다.
+### 10.3 RTSP probe 테스트
 
-### 8.2 RTSP probe 테스트
-
-loopback TCP 서버가 다음과 같은 RTSP 응답을 반환하도록 구성하여 probe 성공 여부를 확인하여야 한다.
+가짜 TCP 서버가 다음 응답을 반환하도록 구성한다.
 
 ```text
 RTSP/2.0 200 OK
@@ -208,50 +311,48 @@ CSeq: 1
 
 ```
 
-probe 결과는 `True`여야 한다.
+정상 응답에서는 probe 결과가 `True`여야 한다.
 
-연결 거부 또는 timeout 환경에서 probe 결과는 `False`여야 한다.
+연결 거부 또는 timeout에서는 `False`여야 한다.
 
-### 8.3 End-to-End 테스트
+### 10.4 End-to-End 테스트
 
-다음 전체 흐름을 하나의 테스트에서 검증하여야 한다.
+다음 전체 흐름을 검증하여야 한다.
 
 ```text
-Sender
-  |
-  | UDP ADVERTISE
-  v
-Receiver
-  |
-  | RTSP/2.0 OPTIONS
-  v
-Fake RTSP Server
-  |
-  | RTSP/2.0 200 OK
-  v
-Receiver
-  |
-  v
-rtsp_connected = True
+Sender                         Receiver                  Fake RTSP Server
+  |                               |                           |
+  |--- ADVERTISE broadcast ------>|                           |
+  |<------ ACK unicast -----------|                           |
+  |------- DETAIL unicast ------->|                           |
+  |<------ ACK unicast -----------|                           |
+  |                               |------ OPTIONS ----------->|
+  |                               |<----- RTSP/2.0 200 -------|
+  |                               |                           |
 ```
 
-## 9. 완료 기준
+최종 결과의 `rtsp_connected`는 `True`여야 한다.
 
-0.0.1 버전은 다음 조건을 모두 만족하면 완료된 것으로 간주한다.
+## 11. 완료 기준
+
+0.0.1은 다음 조건을 모두 만족하면 완료된 것으로 간주한다.
 
 1. Python 3.11.9에서 패키지를 import할 수 있다.
-2. Sender가 MAC 주소와 RTSP 연결정보를 UDP broadcast로 전송할 수 있다.
-3. Receiver가 해당 정보를 수신할 수 있다.
-4. Receiver가 광고된 endpoint에 RTSP/2.0 `OPTIONS` 요청을 보낼 수 있다.
-5. 정상 RTSP 응답에서 `rtsp_connected=True`를 반환할 수 있다.
-6. 연결 실패 또는 잘못된 응답에서 `rtsp_connected=False`를 반환할 수 있다.
-7. 최소 UDP, RTSP probe, End-to-End 테스트가 통과한다.
+2. Sender가 최소 ADVERTISE를 UDP broadcast할 수 있다.
+3. Receiver가 ADVERTISE를 수신하고 ACK를 unicast할 수 있다.
+4. Sender가 ACK peer로 DETAIL을 unicast할 수 있다.
+5. Receiver가 DETAIL을 수신하고 ACK를 unicast할 수 있다.
+6. Receiver가 전달받은 endpoint에 RTSP/2.0 `OPTIONS` 요청을 보낼 수 있다.
+7. RTSP 성공 또는 실패 결과를 `rtsp_connected`로 반환할 수 있다.
+8. 최소 End-to-End 테스트가 통과한다.
 
-## 10. 알려진 제한
+## 12. 알려진 제한
 
 * UDP 데이터그램의 전달 성공을 보장하지 않는다.
-* 메시지 중복 및 순서 변경을 처리하지 않는다.
-* 하나의 장비에 대한 장기 상태를 유지하지 않는다.
-* MAC 주소는 네트워크 인터페이스 변경 또는 MAC 주소 변경 시 달라질 수 있다.
+* ACK 유실 시 자동 재전송하지 않는다.
+* 메시지 중복 및 순서 변경을 별도로 처리하지 않는다.
+* `message_id`를 사용하지 않는다.
+* 장비의 장기 상태를 유지하지 않는다.
+* MAC 주소 변경 시 동일 장비도 다른 `device_id`로 인식될 수 있다.
 * RTSP `OPTIONS` 성공은 실제 영상 재생 성공을 보장하지 않는다.
-* 보안 기능을 제공하지 않으므로 신뢰할 수 있는 로컬 네트워크에서 사용하는 것을 전제로 한다.
+* 인증 및 암호화를 제공하지 않으므로 신뢰할 수 있는 로컬 네트워크에서 사용하는 것을 전제로 한다.

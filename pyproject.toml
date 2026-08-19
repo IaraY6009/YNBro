@@ -3,29 +3,23 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rtsp-bootstrap"
-version = "0.1.0"
+name = "ynb"
+version = "0.0.1"
 description = "LAN discovery bootstrap protocol for RTSP connection information"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "YNBro contributors" }]
 dependencies = []
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Operating System :: OS Independent",
 ]
-
-[project.scripts]
-rtsp-bootstrap-sender = "rtsp_bootstrap.cli:sender_main"
-rtsp-bootstrap-receiver = "rtsp_bootstrap.cli:receiver_main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-rtsp_bootstrap = ["py.typed"]
