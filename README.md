@@ -50,10 +50,49 @@ PoC는 설계 가능성을 검증하는 초기 구현을 뜻합니다.
 
 프로젝트 루트, 즉 `pyproject.toml`이 있는 디렉터리에서 실행합니다.
 
-### 2.1 Windows PowerShell
+### 2.1 Windows CMD (권장)
 
-가상환경을 활성화하지 않고 그 안의 Python을 직접 사용하므로 PowerShell
-execution policy의 영향을 받지 않습니다.
+Windows에서는 명령 프롬프트(CMD)를 권장합니다. PowerShell에서는
+실행 정책(execution policy) 설정에 따라 가상환경 활성화 스크립트인
+`Activate.ps1`이 차단될 수 있지만, CMD의 `activate.bat`은 이 PowerShell
+실행 정책의 적용 대상이 아닙니다.
+
+먼저 CMD를 열고 프로젝트 루트로 이동한 뒤 다음 명령을 실행합니다.
+`C:\path\to\YNBro`는 실제 프로젝트 경로로 바꾸어야 합니다.
+
+```cmd
+cd /d "C:\path\to\YNBro"
+
+python --version
+python -m venv .venv
+.venv\Scripts\activate.bat
+
+python -m pip install -e .
+python -c "import ynb; from ynb import sender, receiver; print(ynb.__version__)"
+```
+
+`python -m venv .venv`는 프로젝트 전용 Python 가상환경을 `.venv`에
+만듭니다. `activate.bat`을 실행하면 프롬프트 앞에 `(.venv)`가
+표시되고, 이후의 `python`은 가상환경 안의 Python을 가리킵니다.
+
+새 CMD 창에서는 가상환경을 다시 만들거나 패키지를 다시 설치할 필요
+없이 다음 명령만 실행하면 됩니다.
+
+```cmd
+cd /d "C:\path\to\YNBro"
+.venv\Scripts\activate.bat
+```
+
+가상환경 사용을 끝내려면 `deactivate`를 실행하거나 CMD 창을 닫습니다.
+
+### 2.2 Windows PowerShell (대안)
+
+PowerShell을 사용해도 됩니다. 다만 `.\.venv\Scripts\Activate.ps1`은
+실행 정책에 따라 `running scripts is disabled on this system` 또는
+`이 시스템에서 스크립트를 실행할 수 없습니다`와 같은 오류로 차단될
+수 있습니다. 실행 정책을 변경하지 않으려면 가상환경을 활성화하지 않고
+그 안의 Python을 직접 실행하면 됩니다. `$Py`는 그 Python 경로를
+저장하는 PowerShell 변수입니다.
 
 ```powershell
 Set-Location 'C:\path\to\YNBro'
@@ -61,11 +100,7 @@ Set-Location 'C:\path\to\YNBro'
 python --version
 python -m venv .venv
 
-$Py = if (Test-Path .\.venv\Scripts\python.exe) {
-    (Resolve-Path .\.venv\Scripts\python.exe).Path
-} else {
-    (Resolve-Path .\.venv\bin\python.exe).Path
-}
+$Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
 & $Py -m pip install -e .
 & $Py -c "import ynb; from ynb import sender, receiver; print(ynb.__version__)"
 ```
@@ -82,19 +117,14 @@ $Py = if (Test-Path .\.venv\Scripts\python.exe) {
 ```
 
 새 PowerShell 창을 열 때마다 실제 프로젝트 경로로 이동해 다음 블록을
-다시 실행하면
-이 README의 `$Py` 명령을 그대로 사용할 수 있습니다.
+다시 실행하면 이 README의 `$Py` 명령을 계속 사용할 수 있습니다.
 
 ```powershell
 Set-Location 'C:\path\to\YNBro'
-$Py = if (Test-Path .\.venv\Scripts\python.exe) {
-    (Resolve-Path .\.venv\Scripts\python.exe).Path
-} else {
-    (Resolve-Path .\.venv\bin\python.exe).Path
-}
+$Py = (Resolve-Path .\.venv\Scripts\python.exe).Path
 ```
 
-### 2.2 Linux 또는 macOS 계열 셸
+### 2.3 Linux 또는 macOS 계열 셸
 
 ```sh
 cd /path/to/YNBro
@@ -124,7 +154,15 @@ fi
 "$PY" -c 'import ynb; from ynb import sender, receiver; print(ynb.__version__)'
 ```
 
-### 2.3 설치 확인 테스트
+### 2.4 설치 확인 테스트
+
+CMD에서 가상환경을 활성화했다면 다음과 같이 실행합니다.
+
+```cmd
+python -m unittest discover -s tests -v
+```
+
+PowerShell에서는 다음과 같습니다.
 
 ```powershell
 & $Py -m unittest discover -s tests -v
