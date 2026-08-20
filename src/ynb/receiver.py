@@ -6,6 +6,7 @@ import socket
 import time
 from typing import Any
 
+from . import connecter
 from ._protocol import (
     ADVERTISE,
     DETAIL,
@@ -29,12 +30,7 @@ def discover(
     start_port: int = START_PORT,
     bind_host: str = "0.0.0.0",
 ) -> dict[str, object] | None:
-    """Receive and acknowledge one valid ADVERTISE/DETAIL exchange.
-
-    The merged receiver branch did not implement the RTSP probe required to
-    produce the SRS result dictionary, so a completed UDP exchange currently
-    returns ``None`` after its DETAIL ACK.
-    """
+    """Discover one Sender, probe its RTSP endpoint, and return the SRS result."""
 
     timeout_value = validate_timeout(timeout)
     listen_port = validate_port(start_port)
@@ -112,9 +108,38 @@ def discover(
                 except OSError:
                     continue
 
-                # RTSP URI construction and probe are intentionally left
-                # unimplemented because neither merged feature branch has them.
-                return None
+                detail_device_id = str(detail["device_id"])
+                detail_ip = str(detail["ip"])
+                detail_port = int(detail["rtsp_port"])
+                detail_path = str(detail["rtsp_path"])
+
+                # CODEX-GENERATED (Codex를 통해 생성된 코드): FR-RCV-006과
+                # FR-RTSP-001~007 구현. DETAIL ACK 뒤 discover() 전체
+                # deadline의 남은 시간만 probe에 준다.
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    connected = connecter.probe_rtsp(
+                        detail_ip,
+                        detail_port,
+                        detail_path,
+                        timeout=remaining,
+                    )
+                except Exception:
+                    # SRS FR-RTSP-007: probe 실패가 Receiver 밖으로 전파되면 안 된다.
+                    connected = False
+
+                # CODEX-GENERATED (Codex를 통해 생성된 코드): SRS 9장의
+                # 정확한 최종 결과 스키마를 생성한다.
+                return {
+                    "device_id": detail_device_id,
+                    "ip": detail_ip,
+                    "rtsp_port": detail_port,
+                    "rtsp_path": detail_path,
+                    "rtsp_uri": connecter.build_rtsp_uri(
+                        detail_ip, detail_port, detail_path
+                    ),
+                    "rtsp_connected": connected,
+                }
     except (OSError, OverflowError):
         return None
 
