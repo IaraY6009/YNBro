@@ -28,13 +28,13 @@
 ```text
 Sender                         Receiver                    RTSP Server
   |                               |                            |
-  |--- ADVERTISE broadcast ------>|                            |
+  |--- ADVERTISE (id=A) broadcast>|                            |
   |                               |                            |
-  |<------ ACK unicast -----------|                            |
+  |<------ ACK (id=A) unicast ----|                            |
   |                               |                            |
-  |------- DETAIL unicast ------->|                            |
+  |------- DETAIL (id=D) unicast->|                            |
   |                               |                            |
-  |<------ ACK unicast -----------|                            |
+  |<------ ACK (id=D) unicast ----|                            |
   |                               |                            |
   |                               |------- TCP connect ------->|
   |                               |------- RTSP OPTIONS ------>|
@@ -56,8 +56,7 @@ Sender                         Receiver                    RTSP Server
 0.0.1에서는 다음 기능을 구현하지 않는다.
 
 * 메시지 재전송
-* `message_id`
-* 중복 메시지 제거
+* `message_id`를 이용한 중복 메시지 제거 또는 replay 방지
 * UDP 패킷 재정렬 처리
 * 장비 상태 registry
 * callback
@@ -81,6 +80,7 @@ Sender                         Receiver                    RTSP Server
 | Sender     | 자신의 존재와 RTSP 연결정보를 제공하는 측                          |
 | Receiver   | Sender를 발견하고 RTSP 연결 가능 여부를 확인하는 측                 |
 | device ID  | Sender를 식별하는 값. 0.0.1에서는 MAC 주소를 사용                |
+| message ID | 개별 ADVERTISE 또는 DETAIL과 그 ACK를 연결하는 UUID v4 문자열    |
 | peer       | UDP 데이터그램의 실제 발신 `(ip, port)`                      |
 | endpoint   | `(ip, rtsp_port, rtsp_path)`로 구성되는 RTSP 접속정보       |
 | probe      | endpoint에 RTSP/2.0 `OPTIONS` 요청을 보내 응답 여부를 확인하는 작업 |
@@ -97,6 +97,7 @@ Sender                         Receiver                    RTSP Server
 | CON-005 | ACK와 DETAIL은 UDP unicast를 사용하여야 한다.             |
 | CON-006 | wire 데이터는 하나의 UDP 데이터그램에 담긴 UTF-8 JSON 객체여야 한다. |
 | CON-007 | RTSP 연결 확인은 RTSP 2.0을 대상으로 하여야 한다.              |
+| CON-008 | `message_id`는 canonical lowercase UUID v4 문자열이어야 한다. |
 
 ## 5. Wire 데이터 요구사항
 
@@ -113,6 +114,7 @@ Sender가 자신의 존재를 알리기 위한 최소 광고 메시지이다.
 ```json
 {
   "message_type": "ADVERTISE",
+  "message_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "device_id": "DC:A6:32:12:34:56"
 }
 ```
@@ -120,6 +122,7 @@ Sender가 자신의 존재를 알리기 위한 최소 광고 메시지이다.
 | 필드             | 타입     | 설명              |
 | -------------- | ------ | --------------- |
 | `message_type` | string | 정확히 `ADVERTISE` |
+| `message_id`   | string | 이 ADVERTISE를 식별하는 UUID v4 |
 | `device_id`    | string | Sender의 MAC 주소  |
 
 `device_id`는 `AA:BB:CC:DD:EE:FF` 형식의 MAC 주소 문자열을 사용한다.
@@ -135,6 +138,7 @@ ADVERTISE에 대한 ACK:
 ```json
 {
   "message_type": "ACK",
+  "message_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "device_id": "DC:A6:32:12:34:56",
   "ack_for": "ADVERTISE"
 }
@@ -145,6 +149,7 @@ DETAIL에 대한 ACK:
 ```json
 {
   "message_type": "ACK",
+  "message_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "device_id": "DC:A6:32:12:34:56",
   "ack_for": "DETAIL"
 }
@@ -153,10 +158,14 @@ DETAIL에 대한 ACK:
 | 필드             | 타입     | 설명                       |
 | -------------- | ------ | ------------------------ |
 | `message_type` | string | 정확히 `ACK`                |
+| `message_id`   | string | ACK 대상 메시지에서 복사한 UUID v4 |
 | `device_id`    | string | ACK 대상 Sender의 device ID |
 | `ack_for`      | string | `ADVERTISE` 또는 `DETAIL`  |
 
 ACK는 UDP 데이터그램을 실제로 보낸 peer 주소로 unicast하여야 한다.
+
+ACK의 `message_id`는 확인 대상 ADVERTISE 또는 DETAIL의 `message_id`와 정확히
+같아야 한다. ACK를 위해 새로운 `message_id`를 생성하지 않는다.
 
 ACK는 RTSP 연결 성공을 의미하지 않는다.
 
@@ -167,6 +176,7 @@ Sender가 Receiver에게 실제 RTSP 접속정보를 전달하기 위한 메시�
 ```json
 {
   "message_type": "DETAIL",
+  "message_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "device_id": "DC:A6:32:12:34:56",
   "ip": "192.168.0.10",
   "rtsp_port": 8554,
@@ -177,10 +187,17 @@ Sender가 Receiver에게 실제 RTSP 접속정보를 전달하기 위한 메시�
 | 필드             | 타입      | 설명                      |
 | -------------- | ------- | ----------------------- |
 | `message_type` | string  | 정확히 `DETAIL`            |
+| `message_id`   | string  | 이 DETAIL을 식별하는 UUID v4 |
 | `device_id`    | string  | Sender의 MAC 주소          |
 | `ip`           | string  | RTSP 서버의 IPv4 주소        |
 | `rtsp_port`    | integer | RTSP TCP 포트, `1..65535` |
 | `rtsp_path`    | string  | `/`로 시작하는 RTSP 경로       |
+
+Sender는 `uuid.uuid4()`와 동등한 방법으로 각 ADVERTISE와 DETAIL에 새
+`message_id`를 생성하여야 한다. 동일 교환의 ADVERTISE와 DETAIL도 서로 다른
+ID를 사용한다. Receiver는 ACK에 대상 메시지의 ID를 그대로 복사하고 Sender는
+해당 ID가 일치하는 ACK만 유효한 것으로 처리한다. 0.0.1은 이 ID를 ACK
+상관관계에만 사용한다.
 
 ## 6. 기능 요구사항
 
@@ -188,23 +205,24 @@ Sender가 Receiver에게 실제 RTSP 접속정보를 전달하기 위한 메시�
 
 | ID         | 요구사항                                                                                         |
 | ---------- | -------------------------------------------------------------------------------------------- |
-| FR-SND-001 | Sender는 `device_id`를 포함한 ADVERTISE 메시지를 생성하여야 한다.                                            |
+| FR-SND-001 | Sender는 `device_id`와 새 `message_id`를 포함한 ADVERTISE 메시지를 생성하여야 한다.                              |
 | FR-SND-002 | Sender는 ADVERTISE를 설정된 UDP start port로 broadcast하여야 한다.                                      |
 | FR-SND-003 | Sender는 ADVERTISE 전송 후 ACK를 수신할 수 있어야 한다.                                                    |
-| FR-SND-004 | `ack_for="ADVERTISE"`인 유효한 ACK를 수신하면 해당 ACK의 peer 주소를 Receiver 주소로 사용하여야 한다.                 |
-| FR-SND-005 | Sender는 해당 Receiver에 `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 포함한 DETAIL을 unicast하여야 한다. |
-| FR-SND-006 | Sender는 DETAIL에 대한 `ack_for="DETAIL"` ACK를 수신할 수 있어야 한다.                                     |
+| FR-SND-004 | `ack_for="ADVERTISE"`이고 `device_id`와 `message_id`가 ADVERTISE와 일치하는 유효한 ACK를 수신하면 해당 ACK의 peer 주소를 Receiver 주소로 사용하여야 한다. |
+| FR-SND-005 | Sender는 해당 Receiver에 새 `message_id`, `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 포함한 DETAIL을 unicast하여야 한다. |
+| FR-SND-006 | Sender는 `ack_for="DETAIL"`이고 `device_id`와 `message_id`가 DETAIL과 일치하는 ACK를 수신할 수 있어야 한다. |
 | FR-SND-007 | 잘못된 MAC 주소, IPv4 주소, RTSP port 또는 RTSP path는 네트워크 전송 전에 거부하여야 한다.                            |
+| FR-SND-008 | Sender는 ADVERTISE와 DETAIL에 서로 다른 새 UUID v4 `message_id`를 사용하여야 한다. |
 
 ### 6.2 Receiver
 
 | ID         | 요구사항                                                                           |
 | ---------- | ------------------------------------------------------------------------------ |
 | FR-RCV-001 | Receiver는 설정된 UDP start port에서 ADVERTISE를 수신하여야 한다.                            |
-| FR-RCV-002 | Receiver는 유효한 ADVERTISE를 수신하면 데이터그램의 실제 peer 주소로 ADVERTISE ACK를 unicast하여야 한다. |
+| FR-RCV-002 | Receiver는 유효한 ADVERTISE를 수신하면 ADVERTISE의 `message_id`를 복사한 ACK를 데이터그램의 실제 peer 주소로 unicast하여야 한다. |
 | FR-RCV-003 | Receiver는 ACK를 보낸 Sender로부터 DETAIL을 수신하여야 한다.                                  |
-| FR-RCV-004 | Receiver는 DETAIL의 `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 검증하여야 한다.       |
-| FR-RCV-005 | Receiver는 유효한 DETAIL을 수신하면 Sender의 peer 주소로 DETAIL ACK를 unicast하여야 한다.         |
+| FR-RCV-004 | Receiver는 DETAIL의 `message_id`, `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 검증하여야 한다. |
+| FR-RCV-005 | Receiver는 유효한 DETAIL을 수신하면 DETAIL의 `message_id`를 복사한 ACK를 Sender의 peer 주소로 unicast하여야 한다. |
 | FR-RCV-006 | DETAIL ACK 전송 후 광고된 endpoint에 RTSP probe를 수행하여야 한다.                            |
 | FR-RCV-007 | `discover(timeout)`은 지정된 시간 안에 정상적인 정보 교환이 완료되지 않으면 결과 없음으로 종료하여야 한다.          |
 | FR-RCV-008 | 잘못된 UDP 입력은 Receiver 전체를 종료시키지 않아야 한다.                                         |
@@ -265,16 +283,20 @@ Receiver는 DETAIL 수신과 RTSP probe를 완료한 경우 다음 형태의 Pyt
 ```text
 Sender
   |
-  | ADVERTISE broadcast
+  | ADVERTISE (message_id=A) broadcast
   v
 Receiver
   |
-  | ACK unicast
+  | ACK (message_id=A) unicast
   v
 Sender
 ```
 
 Receiver가 받은 `device_id`가 Sender가 전송한 MAC 주소와 동일하여야 한다.
+
+ADVERTISE의 `message_id`가 UUID v4 형식이어야 하며 ADVERTISE ACK의
+`message_id`가 이 값과 동일하여야 한다. Sender는 다른 `message_id`를 가진
+ACK를 무시하여야 한다.
 
 Sender는 ACK를 보낸 Receiver의 UDP peer 주소를 확인할 수 있어야 한다.
 
@@ -285,11 +307,11 @@ Sender는 ACK를 보낸 Receiver의 UDP peer 주소를 확인할 수 있어야 �
 ```text
 Sender
   |
-  | DETAIL unicast
+  | DETAIL (message_id=D) unicast
   v
 Receiver
   |
-  | ACK unicast
+  | ACK (message_id=D) unicast
   v
 Sender
 ```
@@ -300,6 +322,10 @@ Receiver가 받은 다음 값이 Sender가 보낸 값과 동일하여야 한다.
 * `ip`
 * `rtsp_port`
 * `rtsp_path`
+
+DETAIL의 `message_id`가 ADVERTISE의 `message_id`와 달라야 하며 DETAIL ACK의
+`message_id`는 DETAIL의 값과 동일하여야 한다. Sender는 다른 `message_id`를
+가진 ACK를 무시하여야 한다.
 
 ### 10.3 RTSP probe 테스트
 
@@ -322,10 +348,10 @@ CSeq: 1
 ```text
 Sender                         Receiver                  Fake RTSP Server
   |                               |                           |
-  |--- ADVERTISE broadcast ------>|                           |
-  |<------ ACK unicast -----------|                           |
-  |------- DETAIL unicast ------->|                           |
-  |<------ ACK unicast -----------|                           |
+  |--- ADVERTISE (id=A) broadcast>|                           |
+  |<------ ACK (id=A) unicast ----|                           |
+  |------- DETAIL (id=D) unicast->|                           |
+  |<------ ACK (id=D) unicast ----|                           |
   |                               |------ OPTIONS ----------->|
   |                               |<----- RTSP/2.0 200 -------|
   |                               |                           |
@@ -344,14 +370,15 @@ Sender                         Receiver                  Fake RTSP Server
 5. Receiver가 DETAIL을 수신하고 ACK를 unicast할 수 있다.
 6. Receiver가 전달받은 endpoint에 RTSP/2.0 `OPTIONS` 요청을 보낼 수 있다.
 7. RTSP 성공 또는 실패 결과를 `rtsp_connected`로 반환할 수 있다.
-8. 최소 End-to-End 테스트가 통과한다.
+8. 두 ACK가 각각 대상 ADVERTISE와 DETAIL의 `message_id`와 일치할 때만 인정된다.
+9. 최소 End-to-End 테스트가 통과한다.
 
 ## 12. 알려진 제한
 
 * UDP 데이터그램의 전달 성공을 보장하지 않는다.
 * ACK 유실 시 자동 재전송하지 않는다.
 * 메시지 중복 및 순서 변경을 별도로 처리하지 않는다.
-* `message_id`를 사용하지 않는다.
+* `message_id`는 ACK 상관관계에만 사용하며 중복 제거, 재전송 또는 replay 방지를 제공하지 않는다.
 * 장비의 장기 상태를 유지하지 않는다.
 * MAC 주소 변경 시 동일 장비도 다른 `device_id`로 인식될 수 있다.
 * RTSP `OPTIONS` 성공은 실제 영상 재생 성공을 보장하지 않는다.
