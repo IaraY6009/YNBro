@@ -8,3 +8,7 @@ __pycache__/
 .venv/
 build/
 dist/
+blackBox/media/*
+!blackBox/media/.gitkeep
+blackBox/tools/*.exe
+blackBox/tools/*.zip
