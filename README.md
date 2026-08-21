@@ -751,10 +751,10 @@ UDP 발견과 분리해 RTSP probe만 검사하려면 다음 명령을 사용합
 ```text
 Sender                         Receiver                    RTSP Server
   |                               |                            |
-  |--- ADVERTISE broadcast ------>|                            |
-  |<------ ACK unicast -----------|                            |
-  |------- DETAIL unicast ------->|                            |
-  |<------ ACK unicast -----------|                            |
+  |--- ADVERTISE (id=A) broadcast>|                            |
+  |<------ ACK (id=A) unicast ----|                            |
+  |------- DETAIL (id=D) unicast->|                            |
+  |<------ ACK (id=D) unicast ----|                            |
   |                               |------- TCP connect ------->|
   |                               |------- RTSP OPTIONS ------>|
   |                               |<------ RTSP/2.0 2xx -------|
@@ -765,6 +765,11 @@ Sender                         Receiver                    RTSP Server
 ADVERTISE만 같은 네트워크의 여러 장비가 받을 수 있도록 브로드캐스트합니다.
 Receiver가 ACK를 보내면 Sender는 `recvfrom()`이 알려 준 실제 peer
 `(IPv4, UDP port)`로 DETAIL을 유니캐스트합니다.
+
+Sender는 ADVERTISE와 DETAIL마다 서로 다른 UUID v4 `message_id`를 생성합니다.
+Receiver는 수신한 ID를 ACK에 그대로 복사하며, Sender는 peer, `device_id`,
+`ack_for`, `message_id`가 모두 일치하는 ACK만 인정합니다. 이 ID는 ACK
+상관관계에만 사용하며 재전송이나 중복 제거를 의미하지 않습니다.
 
 peer는 UDP 교환 상대이고 DETAIL의 `ip`는 RTSP 접속 목적지입니다. 두 주소는
 같을 필요가 없습니다.
@@ -782,6 +787,7 @@ ADVERTISE:
 ```json
 {
   "message_type": "ADVERTISE",
+  "message_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "device_id": "AA:BB:CC:DD:EE:FF"
 }
 ```
@@ -791,6 +797,7 @@ ADVERTISE ACK:
 ```json
 {
   "message_type": "ACK",
+  "message_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   "device_id": "AA:BB:CC:DD:EE:FF",
   "ack_for": "ADVERTISE"
 }
@@ -801,6 +808,7 @@ DETAIL:
 ```json
 {
   "message_type": "DETAIL",
+  "message_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "device_id": "AA:BB:CC:DD:EE:FF",
   "ip": "192.168.1.10",
   "rtsp_port": 8554,
@@ -813,13 +821,15 @@ DETAIL ACK:
 ```json
 {
   "message_type": "ACK",
+  "message_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   "device_id": "AA:BB:CC:DD:EE:FF",
   "ack_for": "DETAIL"
 }
 ```
 
-모든 메시지는 UDP 데이터그램 하나에 담긴 UTF-8 JSON 객체입니다. 누락
-필드뿐 아니라 정의되지 않은 추가 필드도 거부합니다.
+모든 메시지는 UDP 데이터그램 하나에 담긴 UTF-8 JSON 객체입니다.
+`message_id`는 canonical lowercase UUID v4 문자열이어야 합니다. 누락 필드,
+잘못된 UUID, 정의되지 않은 추가 필드는 모두 거부합니다.
 
 ## 10. Python API 참고
 
@@ -972,9 +982,9 @@ lsof -nP -iTCP:8554 -sTCP:LISTEN
 
 | 파일 | 검사 대상 |
 | --- | --- |
-| `tests/test_protocol.py` | wire schema, UTF-8 JSON, 입력 경계 |
-| `tests/test_sender.py` | broadcast 옵션, 실제 ACK peer, 잘못된 ACK |
-| `tests/test_receiver.py` | malformed 입력, peer와 device ID 고정 |
+| `tests/test_protocol.py` | wire schema, UUID v4 `message_id`, UTF-8 JSON, 입력 경계 |
+| `tests/test_sender.py` | broadcast 옵션, 실제 ACK peer, ACK `message_id` 상관관계 |
+| `tests/test_receiver.py` | malformed 입력, peer/device ID 고정, ACK `message_id` 복사 |
 | `tests/test_connecter.py` | URI, OPTIONS/CSeq, 성공·거부·timeout |
 | `tests/test_e2e.py` | 공개 API 전체 성공 및 RTSP 실패 결과 |
 
@@ -990,7 +1000,7 @@ Receiver는 DETAIL에 담긴 endpoint로 TCP 연결을 시도합니다. 신뢰�
 현재 제공하지 않는 기능:
 
 - UDP 자동 재전송
-- `message_id`와 replay 방지
+- `message_id` 기반 중복 제거와 replay 방지
 - 중복 및 재정렬 처리
 - callback과 장비 registry
 - 비동기 또는 상시 실행 Receiver

@@ -14,6 +14,9 @@ from tests.support import FakeRtspServer, free_udp_port
 
 
 DEVICE_ID = "DC:A6:32:12:34:56"
+ADVERTISE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+DETAIL_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+IMPOSTOR_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
 
 class ReceiverTests(unittest.TestCase):
@@ -40,7 +43,21 @@ class ReceiverTests(unittest.TestCase):
                 sender_socket.sendto(b"not-json", target)
                 sender_socket.sendto(
                     json.dumps(
-                        {"message_type": "ADVERTISE", "device_id": DEVICE_ID}
+                        {
+                            "message_type": "ADVERTISE",
+                            "message_id": "not-a-uuid",
+                            "device_id": DEVICE_ID,
+                        }
+                    ).encode(),
+                    target,
+                )
+                sender_socket.sendto(
+                    json.dumps(
+                        {
+                            "message_type": "ADVERTISE",
+                            "message_id": ADVERTISE_ID,
+                            "device_id": DEVICE_ID,
+                        }
                     ).encode(),
                     target,
                 )
@@ -50,6 +67,7 @@ class ReceiverTests(unittest.TestCase):
                     json.loads(payload),
                     {
                         "message_type": "ACK",
+                        "message_id": ADVERTISE_ID,
                         "device_id": DEVICE_ID,
                         "ack_for": "ADVERTISE",
                     },
@@ -60,6 +78,7 @@ class ReceiverTests(unittest.TestCase):
                         json.dumps(
                             {
                                 "message_type": "DETAIL",
+                                "message_id": IMPOSTOR_ID,
                                 "device_id": DEVICE_ID,
                                 "ip": "127.0.0.1",
                                 "rtsp_port": rtsp_server.port,
@@ -75,6 +94,7 @@ class ReceiverTests(unittest.TestCase):
                     json.dumps(
                         {
                             "message_type": "DETAIL",
+                            "message_id": IMPOSTOR_ID,
                             "device_id": "00:11:22:33:44:55",
                             "ip": "127.0.0.1",
                             "rtsp_port": rtsp_server.port,
@@ -87,6 +107,7 @@ class ReceiverTests(unittest.TestCase):
                     json.dumps(
                         {
                             "message_type": "DETAIL",
+                            "message_id": DETAIL_ID,
                             "device_id": DEVICE_ID,
                             "ip": "127.0.0.1",
                             "rtsp_port": rtsp_server.port,
@@ -101,6 +122,7 @@ class ReceiverTests(unittest.TestCase):
                     json.loads(payload),
                     {
                         "message_type": "ACK",
+                        "message_id": DETAIL_ID,
                         "device_id": DEVICE_ID,
                         "ack_for": "DETAIL",
                     },

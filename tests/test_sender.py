@@ -4,6 +4,7 @@ import json
 import socket
 import threading
 import unittest
+import uuid
 from unittest import mock
 
 from ynb import sender
@@ -13,6 +14,7 @@ from tests.support import free_udp_port
 
 
 DEVICE_ID = "DC:A6:32:12:34:56"
+MISMATCHED_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
 
 class SenderTests(unittest.TestCase):
@@ -39,11 +41,14 @@ class SenderTests(unittest.TestCase):
                     ack_socket.settimeout(2.0)
                     ready.set()
                     payload, peer = discovery_socket.recvfrom(65_535)
-                    received.append((json.loads(payload), peer))
+                    advertisement = json.loads(payload)
+                    advertisement_id = advertisement["message_id"]
+                    received.append((advertisement, peer))
                     ack_socket.sendto(
                         json.dumps(
                             {
                                 "message_type": "ACK",
+                                "message_id": advertisement_id,
                                 "device_id": DEVICE_ID,
                                 "ack_for": [],
                             }
@@ -54,6 +59,18 @@ class SenderTests(unittest.TestCase):
                         json.dumps(
                             {
                                 "message_type": "ACK",
+                                "message_id": MISMATCHED_ID,
+                                "device_id": DEVICE_ID,
+                                "ack_for": "ADVERTISE",
+                            }
+                        ).encode(),
+                        peer,
+                    )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": advertisement_id,
                                 "device_id": DEVICE_ID,
                                 "ack_for": "ADVERTISE",
                             }
@@ -61,7 +78,21 @@ class SenderTests(unittest.TestCase):
                         peer,
                     )
                     payload, detail_peer = ack_socket.recvfrom(65_535)
-                    received.append((json.loads(payload), detail_peer))
+                    detail = json.loads(payload)
+                    detail_id = detail["message_id"]
+                    received.append((detail, detail_peer))
+
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": MISMATCHED_ID,
+                                "device_id": DEVICE_ID,
+                                "ack_for": "DETAIL",
+                            }
+                        ).encode(),
+                        detail_peer,
+                    )
 
                     # DETAIL ACK처럼 보이는 패킷을 다른 port에서 먼저 보낸다.
                     # Sender는 최초 ACK peer와 다르므로 이를 무시해야 한다.
@@ -70,6 +101,7 @@ class SenderTests(unittest.TestCase):
                             json.dumps(
                                 {
                                     "message_type": "ACK",
+                                    "message_id": detail_id,
                                     "device_id": DEVICE_ID,
                                     "ack_for": "DETAIL",
                                 }
@@ -80,6 +112,7 @@ class SenderTests(unittest.TestCase):
                         json.dumps(
                             {
                                 "message_type": "ACK",
+                                "message_id": detail_id,
                                 "device_id": DEVICE_ID,
                                 "ack_for": "DETAIL",
                             }
@@ -107,14 +140,28 @@ class SenderTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(error, [])
         self.assertTrue(succeeded)
+        advertisement = received[0][0]
+        detail = received[1][0]
+        advertisement_id = str(advertisement["message_id"])
+        detail_id = str(detail["message_id"])
+        self.assertEqual(uuid.UUID(advertisement_id).version, 4)
+        self.assertEqual(uuid.UUID(detail_id).version, 4)
+        self.assertEqual(str(uuid.UUID(advertisement_id)), advertisement_id)
+        self.assertEqual(str(uuid.UUID(detail_id)), detail_id)
+        self.assertNotEqual(advertisement_id, detail_id)
         self.assertEqual(
-            received[0][0],
-            {"message_type": "ADVERTISE", "device_id": DEVICE_ID},
+            advertisement,
+            {
+                "message_type": "ADVERTISE",
+                "message_id": advertisement_id,
+                "device_id": DEVICE_ID,
+            },
         )
         self.assertEqual(
-            received[1][0],
+            detail,
             {
                 "message_type": "DETAIL",
+                "message_id": detail_id,
                 "device_id": DEVICE_ID,
                 "ip": "127.0.0.1",
                 "rtsp_port": 8554,
@@ -144,18 +191,23 @@ class SenderTests(unittest.TestCase):
                     ack_socket.settimeout(1.0)
                     ready.set()
 
-                    _advertisement, sender_peer = discovery_socket.recvfrom(65_535)
+                    advertisement_payload, sender_peer = discovery_socket.recvfrom(
+                        65_535
+                    )
+                    advertisement_id = json.loads(advertisement_payload)["message_id"]
                     ack_socket.sendto(
                         json.dumps(
                             {
                                 "message_type": "ACK",
+                                "message_id": advertisement_id,
                                 "device_id": DEVICE_ID,
                                 "ack_for": "ADVERTISE",
                             }
                         ).encode(),
                         sender_peer,
                     )
-                    _detail, sender_peer = ack_socket.recvfrom(65_535)
+                    detail_payload, sender_peer = ack_socket.recvfrom(65_535)
+                    detail_id = json.loads(detail_payload)["message_id"]
 
                     # 내용은 맞지만 최초 ACK peer와 port가 다른 위조 ACK다.
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as impostor:
@@ -163,6 +215,7 @@ class SenderTests(unittest.TestCase):
                             json.dumps(
                                 {
                                     "message_type": "ACK",
+                                    "message_id": detail_id,
                                     "device_id": DEVICE_ID,
                                     "ack_for": "DETAIL",
                                 }
@@ -215,9 +268,17 @@ class SenderTests(unittest.TestCase):
         udp_socket.bind.assert_called_once_with(("0.0.0.0", 0))
         first_payload, first_target = udp_socket.sendto.call_args_list[0].args
         self.assertEqual(first_target, ("255.255.255.255", 37_020))
+        advertisement = decode_message(first_payload)
+        message_id = str(advertisement["message_id"])
+        self.assertEqual(uuid.UUID(message_id).version, 4)
+        self.assertEqual(str(uuid.UUID(message_id)), message_id)
         self.assertEqual(
-            decode_message(first_payload),
-            {"message_type": "ADVERTISE", "device_id": DEVICE_ID},
+            advertisement,
+            {
+                "message_type": "ADVERTISE",
+                "message_id": message_id,
+                "device_id": DEVICE_ID,
+            },
         )
 
     def test_platform_timeout_overflow_returns_false(self) -> None:
