@@ -9,6 +9,7 @@ from typing import Any
 from . import connecter
 from ._protocol import (
     ADVERTISE,
+    DEFAULT_TIMEOUT,
     DETAIL,
     MAX_PACKET_SIZE,
     MessageError,
@@ -25,7 +26,7 @@ from ._protocol import (
 
 
 def discover(
-    timeout: float,
+    timeout: float = DEFAULT_TIMEOUT,
     *,
     start_port: int = START_PORT,
     bind_host: str = "0.0.0.0",
@@ -37,111 +38,161 @@ def discover(
     listen_host = validate_ipv4(bind_host)
     deadline = time.monotonic() + timeout_value
 
-    sender_peer: tuple[str, int] | None = None
-    device_id: str | None = None
-    advertisement_id: str | None = None
-
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
             udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             udp_socket.bind((listen_host, listen_port))
 
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return None
-                try:
-                    udp_socket.settimeout(remaining)
-                    payload, peer = udp_socket.recvfrom(MAX_PACKET_SIZE)
-                except (socket.timeout, TimeoutError):
-                    return None
-                except (OSError, OverflowError):
-                    return None
+            advertisement_result = _accept_advertisement(udp_socket, deadline)
+            if advertisement_result is None:
+                return None
+            advertisement, sender_peer = advertisement_result
 
-                try:
-                    message = decode_message(payload)
-                except MessageError:
-                    continue
-
-                if sender_peer is None:
-                    advertisement = _try_parse_advertisement(message)
-                    if advertisement is None:
-                        continue
-                    try:
-                        udp_socket.sendto(
-                            encode_message(
-                                make_ack(
-                                    str(advertisement["device_id"]),
-                                    ADVERTISE,
-                                    message_id=advertisement["message_id"],
-                                )
-                            ),
-                            peer,
-                        )
-                    except OSError:
-                        continue
-                    sender_peer = peer
-                    device_id = str(advertisement["device_id"])
-                    advertisement_id = str(advertisement["message_id"])
-                    continue
-
-                if peer != sender_peer:
-                    continue
-                detail = _try_parse_detail(message)
-                if (
-                    detail is None
-                    or detail["device_id"] != device_id
-                    or detail["message_id"] == advertisement_id
-                ):
-                    continue
-                try:
-                    udp_socket.sendto(
-                        encode_message(
-                            make_ack(
-                                device_id,
-                                DETAIL,
-                                message_id=detail["message_id"],
-                            )
-                        ),
-                        sender_peer,
-                    )
-                except OSError:
-                    continue
-
-                detail_device_id = str(detail["device_id"])
-                detail_ip = str(detail["ip"])
-                detail_port = int(detail["rtsp_port"])
-                detail_path = str(detail["rtsp_path"])
-
-                # CODEX-GENERATED (Codex를 통해 생성된 코드): FR-RCV-006과
-                # FR-RTSP-001~007 구현. DETAIL ACK 뒤 discover() 전체
-                # deadline의 남은 시간만 probe에 준다.
-                remaining = max(0.0, deadline - time.monotonic())
-                try:
-                    connected = connecter.probe_rtsp(
-                        detail_ip,
-                        detail_port,
-                        detail_path,
-                        timeout=remaining,
-                    )
-                except Exception:
-                    # SRS FR-RTSP-007: probe 실패가 Receiver 밖으로 전파되면 안 된다.
-                    connected = False
-
-                # CODEX-GENERATED (Codex를 통해 생성된 코드): SRS 9장의
-                # 정확한 최종 결과 스키마를 생성한다.
-                return {
-                    "device_id": detail_device_id,
-                    "ip": detail_ip,
-                    "rtsp_port": detail_port,
-                    "rtsp_path": detail_path,
-                    "rtsp_uri": connecter.build_rtsp_uri(
-                        detail_ip, detail_port, detail_path
-                    ),
-                    "rtsp_connected": connected,
-                }
+            detail = _accept_detail(
+                udp_socket,
+                deadline=deadline,
+                sender_peer=sender_peer,
+                device_id=str(advertisement["device_id"]),
+                advertisement_id=str(advertisement["message_id"]),
+            )
+            if detail is None:
+                return None
+            return _probe_and_build_result(detail, deadline)
     except (OSError, OverflowError):
         return None
+
+
+def _receive_message(
+    udp_socket: socket.socket,
+    deadline: float,
+) -> tuple[dict[str, Any], tuple[str, int]] | None:
+    """Return the next decodable message and its peer before the deadline."""
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            udp_socket.settimeout(remaining)
+            payload, peer = udp_socket.recvfrom(MAX_PACKET_SIZE)
+        except (socket.timeout, TimeoutError, OSError, OverflowError):
+            return None
+        try:
+            return decode_message(payload), peer
+        except MessageError:
+            continue
+
+
+def _accept_advertisement(
+    udp_socket: socket.socket,
+    deadline: float,
+) -> tuple[dict[str, object], tuple[str, int]] | None:
+    """Receive a valid ADVERTISE, acknowledge it, and bind its Sender peer."""
+
+    while True:
+        received = _receive_message(udp_socket, deadline)
+        if received is None:
+            return None
+        message, peer = received
+        advertisement = _try_parse_advertisement(message)
+        if advertisement is None:
+            continue
+        if _send_ack(udp_socket, advertisement, ADVERTISE, peer):
+            return advertisement, peer
+
+
+def _accept_detail(
+    udp_socket: socket.socket,
+    *,
+    deadline: float,
+    sender_peer: tuple[str, int],
+    device_id: str,
+    advertisement_id: str,
+) -> dict[str, object] | None:
+    """Receive and acknowledge a new DETAIL from the selected Sender peer."""
+
+    while True:
+        received = _receive_message(udp_socket, deadline)
+        if received is None:
+            return None
+        message, peer = received
+        if peer != sender_peer:
+            continue
+        repeated_advertisement = _try_parse_advertisement(message)
+        if repeated_advertisement is not None:
+            if (
+                repeated_advertisement["device_id"] == device_id
+                and repeated_advertisement["message_id"] == advertisement_id
+            ):
+                _send_ack(
+                    udp_socket,
+                    repeated_advertisement,
+                    ADVERTISE,
+                    sender_peer,
+                )
+            continue
+        detail = _try_parse_detail(message)
+        if (
+            detail is None
+            or detail["device_id"] != device_id
+            or detail["message_id"] == advertisement_id
+        ):
+            continue
+        if _send_ack(udp_socket, detail, DETAIL, sender_peer):
+            return detail
+
+
+def _send_ack(
+    udp_socket: socket.socket,
+    message: dict[str, object],
+    ack_for: str,
+    peer: tuple[str, int],
+) -> bool:
+    """Copy a received message ID into an ACK and send it to its actual peer."""
+
+    payload = encode_message(
+        make_ack(
+            str(message["device_id"]),
+            ack_for,
+            message_id=message["message_id"],
+        )
+    )
+    try:
+        udp_socket.sendto(payload, peer)
+    except OSError:
+        return False
+    return True
+
+
+def _probe_and_build_result(
+    detail: dict[str, object],
+    deadline: float,
+) -> dict[str, object]:
+    """Probe the DETAIL endpoint with the remaining budget and build the result."""
+
+    device_id = str(detail["device_id"])
+    ip = str(detail["ip"])
+    rtsp_port = int(detail["rtsp_port"])
+    rtsp_path = str(detail["rtsp_path"])
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        connected = connecter.probe_rtsp(
+            ip,
+            rtsp_port,
+            rtsp_path,
+            timeout=remaining,
+        )
+    except Exception:
+        # FR-RTSP-007: probe failure must not escape Receiver.discover().
+        connected = False
+    return {
+        "device_id": device_id,
+        "ip": ip,
+        "rtsp_port": rtsp_port,
+        "rtsp_path": rtsp_path,
+        "rtsp_uri": connecter.build_rtsp_uri(ip, rtsp_port, rtsp_path),
+        "rtsp_connected": connected,
+    }
 
 
 def _try_parse_advertisement(

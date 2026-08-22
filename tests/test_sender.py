@@ -327,6 +327,42 @@ class SenderTests(unittest.TestCase):
             },
         )
 
+    def test_advertisement_retries_ten_times_in_three_second_windows(self) -> None:
+        """No ACK causes ten broadcasts sharing one ID over the 30s budget."""
+
+        udp_socket = mock.MagicMock()
+        socket_context = mock.MagicMock()
+        socket_context.__enter__.return_value = udp_socket
+        socket_context.__exit__.return_value = False
+        monotonic_values = [0.0]
+        for attempt in range(10):
+            monotonic_values.extend((attempt * 3.0, (attempt + 1) * 3.0))
+
+        with (
+            mock.patch("ynb.sender.socket.socket", return_value=socket_context),
+            mock.patch("ynb.sender.time.monotonic", side_effect=monotonic_values),
+            mock.patch(
+                "ynb.sender._wait_for_matching_ack", return_value=None
+            ) as wait,
+        ):
+            succeeded = sender.advertise(
+                DEVICE_ID,
+                "127.0.0.1",
+                8554,
+                "/stream",
+            )
+
+        self.assertFalse(succeeded)
+        self.assertEqual(udp_socket.sendto.call_count, 10)
+        payloads = [call.args[0] for call in udp_socket.sendto.call_args_list]
+        targets = [call.args[1] for call in udp_socket.sendto.call_args_list]
+        self.assertTrue(all(payload == payloads[0] for payload in payloads))
+        self.assertEqual(targets, [("255.255.255.255", 37_020)] * 10)
+        self.assertEqual(
+            [call.kwargs["deadline"] for call in wait.call_args_list],
+            [3.0 * attempt for attempt in range(1, 11)],
+        )
+
     def test_platform_timeout_overflow_returns_false(self) -> None:
         """UDP socket이 큰 timeout을 거부해도 False로 끝나야 한다."""
 

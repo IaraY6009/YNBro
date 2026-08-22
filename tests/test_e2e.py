@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import queue
 import threading
 import time
@@ -7,6 +8,7 @@ import unittest
 from unittest import mock
 
 from ynb import receiver, sender
+from ynb.connecter import probe_rtsp
 
 from tests.support import FakeRtspServer, free_udp_port
 
@@ -15,6 +17,14 @@ DEVICE_ID = "DC:A6:32:12:34:56"
 
 
 class EndToEndTests(unittest.TestCase):
+    def test_public_network_timeouts_default_to_thirty_seconds(self) -> None:
+        for function in (sender.advertise, receiver.discover, probe_rtsp):
+            with self.subTest(function=function.__qualname__):
+                self.assertEqual(
+                    inspect.signature(function).parameters["timeout"].default,
+                    30.0,
+                )
+
     def _run_exchange(
         self, status_line: str
     ) -> tuple[bool, dict[str, object] | None, int]:

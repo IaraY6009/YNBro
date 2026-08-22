@@ -200,6 +200,74 @@ class ReceiverTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertLess(time.monotonic() - started, 0.5)
 
+    def test_first_device_remains_selected_until_timeout(self) -> None:
+        """A later device cannot replace the first acknowledged advertiser."""
+
+        discovery_port = free_udp_port()
+        results: queue.Queue[dict[str, object] | None] = queue.Queue()
+        thread = threading.Thread(
+            target=lambda: results.put(
+                receiver.discover(
+                    0.3,
+                    start_port=discovery_port,
+                    bind_host="127.0.0.1",
+                )
+            ),
+            daemon=True,
+        )
+        thread.start()
+        time.sleep(0.03)
+        target = ("127.0.0.1", discovery_port)
+
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as first,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as second,
+        ):
+            first.settimeout(0.2)
+            second.settimeout(0.05)
+            first.sendto(
+                json.dumps(
+                    {
+                        "message_type": "ADVERTISE",
+                        "message_id": ADVERTISE_ID,
+                        "device_id": DEVICE_ID,
+                    }
+                ).encode(),
+                target,
+            )
+            first.recvfrom(65_535)
+            # A lost first ACK is recovered by re-ACKing the exact same
+            # advertisement without changing the selected device.
+            first.sendto(
+                json.dumps(
+                    {
+                        "message_type": "ADVERTISE",
+                        "message_id": ADVERTISE_ID,
+                        "device_id": DEVICE_ID,
+                    }
+                ).encode(),
+                target,
+            )
+            repeated_ack, _peer = first.recvfrom(65_535)
+            self.assertEqual(json.loads(repeated_ack)["message_id"], ADVERTISE_ID)
+
+            second.sendto(
+                json.dumps(
+                    {
+                        "message_type": "ADVERTISE",
+                        "message_id": IMPOSTOR_ID,
+                        "device_id": "00:11:22:33:44:55",
+                    }
+                ).encode(),
+                target,
+            )
+            with self.assertRaises(socket.timeout):
+                second.recvfrom(65_535)
+
+        thread.join(1.0)
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(results.get_nowait())
+
     def test_platform_timeout_overflow_returns_none(self) -> None:
         """UDP socket이 큰 timeout을 거부해도 None으로 끝나야 한다."""
 

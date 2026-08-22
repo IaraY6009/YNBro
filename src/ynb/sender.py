@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import socket
 import time
-from typing import Any
+from typing import Any, Final
 
 from ._protocol import (
     ADVERTISE,
+    DEFAULT_TIMEOUT,
     DETAIL,
     MAX_PACKET_SIZE,
     MessageError,
@@ -26,6 +27,8 @@ from ._protocol import (
 # This implementation uses the IPv4 limited-broadcast address and intentionally
 # exposes no destination override that could turn the bootstrap into unicast.
 _BROADCAST_ADDRESS = "255.255.255.255"
+_ADVERTISEMENT_INTERVAL: Final = 3.0
+_ADVERTISEMENT_ATTEMPTS: Final = 10
 
 
 def advertise(
@@ -34,37 +37,33 @@ def advertise(
     rtsp_port: int,
     rtsp_path: str,
     *,
-    timeout: float = 2.0,
+    timeout: float = DEFAULT_TIMEOUT,
     start_port: int = START_PORT,
 ) -> bool:
     """Perform the SRS UDP broadcast bootstrap exchange for one Receiver."""
 
     timeout_value = validate_timeout(timeout)
     destination = (_BROADCAST_ADDRESS, validate_port(start_port))
-
-    # Build both packets before creating a socket so invalid endpoint input is
-    # rejected before any network activity.
-    advertisement = make_advertisement(device_id)
-    detail = make_detail(device_id, ip, rtsp_port, rtsp_path)
-    # CODEX-GENERATED (Codex를 통해 생성된 코드): FR-SND-008에 따라 같은
-    # 교환의 ADVERTISE와 DETAIL에는 반드시 서로 다른 message ID를 사용한다.
-    while detail["message_id"] == advertisement["message_id"]:
-        detail = make_detail(device_id, ip, rtsp_port, rtsp_path)
-    advertisement_payload = encode_message(advertisement)
-    detail_payload = encode_message(detail)
+    advertisement, advertisement_payload = _prepare_advertisement(device_id)
+    detail, detail_payload = _prepare_detail(
+        device_id,
+        ip,
+        rtsp_port,
+        rtsp_path,
+        advertisement_id=str(advertisement["message_id"]),
+    )
     deadline = time.monotonic() + timeout_value
 
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
             udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             udp_socket.bind(("0.0.0.0", 0))
-            udp_socket.sendto(advertisement_payload, destination)
-
-            receiver_peer = _wait_for_ack(
+            receiver_peer = _broadcast_until_ack(
                 udp_socket,
+                advertisement_payload,
+                destination,
                 deadline=deadline,
                 device_id=device_id,
-                ack_for=ADVERTISE,
                 message_id=str(advertisement["message_id"]),
             )
             if receiver_peer is None:
@@ -75,7 +74,7 @@ def advertise(
             # CODEX-GENERATED (Codex를 통해 생성된 코드): FR-SND-006 구현.
             # DETAIL ACK는 첫 ACK를 보낸 동일 peer에서 와야 하며 DETAIL의
             # device/message ID와 일치해야 한다.
-            detail_ack_peer = _wait_for_ack(
+            detail_ack_peer = _wait_for_matching_ack(
                 udp_socket,
                 deadline=deadline,
                 device_id=device_id,
@@ -88,7 +87,64 @@ def advertise(
         return False
 
 
-def _wait_for_ack(
+def _prepare_advertisement(
+    device_id: str,
+) -> tuple[dict[str, object], bytes]:
+    """Validate and encode ADVERTISE before network activity."""
+
+    advertisement = make_advertisement(device_id)
+    return advertisement, encode_message(advertisement)
+
+
+def _prepare_detail(
+    device_id: str,
+    ip: str,
+    rtsp_port: int,
+    rtsp_path: str,
+    *,
+    advertisement_id: str,
+) -> tuple[dict[str, object], bytes]:
+    """Validate DETAIL and ensure it has a new ID before network activity."""
+
+    detail = make_detail(device_id, ip, rtsp_port, rtsp_path)
+    # FR-SND-008: one exchange must use different IDs for its two messages.
+    while detail["message_id"] == advertisement_id:
+        detail = make_detail(device_id, ip, rtsp_port, rtsp_path)
+    return detail, encode_message(detail)
+
+
+def _broadcast_until_ack(
+    udp_socket: socket.socket,
+    advertisement_payload: bytes,
+    destination: tuple[str, int],
+    *,
+    deadline: float,
+    device_id: str,
+    message_id: str,
+) -> tuple[str, int] | None:
+    """Broadcast one ADVERTISE every three seconds, at most ten times."""
+
+    for _attempt in range(_ADVERTISEMENT_ATTEMPTS):
+        udp_socket.sendto(advertisement_payload, destination)
+        attempt_deadline = min(
+            deadline,
+            time.monotonic() + _ADVERTISEMENT_INTERVAL,
+        )
+        receiver_peer = _wait_for_matching_ack(
+            udp_socket,
+            deadline=attempt_deadline,
+            device_id=device_id,
+            ack_for=ADVERTISE,
+            message_id=message_id,
+        )
+        if receiver_peer is not None:
+            return receiver_peer
+        if time.monotonic() >= deadline:
+            return None
+    return None
+
+
+def _wait_for_matching_ack(
     udp_socket: socket.socket,
     *,
     deadline: float,
