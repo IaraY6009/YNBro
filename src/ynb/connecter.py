@@ -8,6 +8,7 @@ import time
 from urllib.parse import quote
 
 from ._protocol import (
+    DEFAULT_TIMEOUT,
     validate_ipv4,
     validate_port,
     validate_rtsp_path,
@@ -34,7 +35,7 @@ def probe_rtsp(
     ip: str,
     rtsp_port: int,
     rtsp_path: str,
-    timeout: float,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> bool:
     """Return whether an RTSP/2.0 OPTIONS request receives a 2xx response."""
 
@@ -50,43 +51,75 @@ def probe_rtsp(
         port = validate_port(rtsp_port)
         path = validate_rtsp_path(rtsp_path)
         uri = build_rtsp_uri(host, port, path)
-        request = (
-            f"OPTIONS {uri} RTSP/2.0\r\n"
-            "CSeq: 1\r\n"
-            "User-Agent: ynb/0.0.1\r\n"
-            "\r\n"
-        ).encode("ascii")
+        request = _make_options_request(uri)
     except (ValueError, UnicodeError):
         return False
 
     deadline = time.monotonic() + timeout_value
-    response = bytearray()
+    response_header = _exchange_options(host, port, request, deadline)
+    return response_header is not None and _is_success_response(response_header)
+
+
+def _make_options_request(uri: str) -> bytes:
+    """Build the minimal RTSP/2.0 OPTIONS request used by the probe."""
+
+    return (
+        f"OPTIONS {uri} RTSP/2.0\r\n"
+        "CSeq: 1\r\n"
+        "User-Agent: ynb/0.0.1\r\n"
+        "\r\n"
+    ).encode("ascii")
+
+
+def _exchange_options(
+    host: str,
+    port: int,
+    request: bytes,
+    deadline: float,
+) -> bytes | None:
+    """Connect, send OPTIONS, and return one complete RTSP response header."""
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
     try:
         with socket.create_connection(
-            (host, port), timeout=timeout_value
+            (host, port), timeout=remaining
         ) as connection:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return None
             connection.settimeout(remaining)
             connection.sendall(request)
-
-            while b"\r\n\r\n" not in response and len(response) < _MAX_RESPONSE_HEADER:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                connection.settimeout(remaining)
-                chunk = connection.recv(
-                    min(4_096, _MAX_RESPONSE_HEADER - len(response))
-                )
-                if not chunk:
-                    break
-                response.extend(chunk)
+            return _receive_response_header(connection, deadline)
     except (OSError, OverflowError, UnicodeError):
-        return False
+        return None
 
+
+def _receive_response_header(
+    connection: socket.socket,
+    deadline: float,
+) -> bytes | None:
+    """Read one bounded RTSP response header within the shared deadline."""
+
+    response = bytearray()
+    while b"\r\n\r\n" not in response and len(response) < _MAX_RESPONSE_HEADER:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        connection.settimeout(remaining)
+        chunk = connection.recv(min(4_096, _MAX_RESPONSE_HEADER - len(response)))
+        if not chunk:
+            break
+        response.extend(chunk)
     if b"\r\n\r\n" not in response:
-        return False
-    status_line = bytes(response).split(b"\r\n", 1)[0]
+        return None
+    return bytes(response).split(b"\r\n\r\n", 1)[0]
+
+
+def _is_success_response(response_header: bytes) -> bool:
+    """Return whether an RTSP header starts with an RTSP/2.0 2xx status line."""
+
+    status_line = response_header.split(b"\r\n", 1)[0]
     match = _STATUS_LINE.fullmatch(status_line)
     return bool(match and 200 <= int(match.group(1)) < 300)

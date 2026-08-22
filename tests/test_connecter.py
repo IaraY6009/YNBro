@@ -30,6 +30,22 @@ class ConnecterTests(unittest.TestCase):
             self.assertFalse(probe_rtsp("127.0.0.1", server.port, "/stream", 1.0))
         self.assertFalse(probe_rtsp("127.0.0.1", free_tcp_port(), "/stream", 0.2))
 
+    def test_rtsp_status_code_boundaries(self) -> None:
+        cases = (
+            ("RTSP/2.0 199 Informational", False),
+            ("RTSP/2.0 200 OK", True),
+            ("RTSP/2.0 299 Success", True),
+            ("RTSP/2.0 300 Redirect", False),
+        )
+
+        for status_line, expected in cases:
+            with self.subTest(status_line=status_line):
+                with FakeRtspServer(status_line) as server:
+                    self.assertEqual(
+                        probe_rtsp("127.0.0.1", server.port, "/stream", 1.0),
+                        expected,
+                    )
+
     def test_malformed_status_lines_are_false(self) -> None:
         """reason phrase가 없거나 제어 문자가 있는 첫 줄은 거부한다."""
 

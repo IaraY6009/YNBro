@@ -12,6 +12,7 @@ from typing import Any, Final, Mapping
 
 START_PORT: Final = 37_020
 MAX_PACKET_SIZE: Final = 65_507
+DEFAULT_TIMEOUT: Final = 30.0
 
 ADVERTISE: Final = "ADVERTISE"
 ACK: Final = "ACK"

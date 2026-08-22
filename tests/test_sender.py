@@ -71,6 +71,28 @@ class SenderTests(unittest.TestCase):
                             {
                                 "message_type": "ACK",
                                 "message_id": advertisement_id,
+                                "device_id": "00:11:22:33:44:55",
+                                "ack_for": "ADVERTISE",
+                            }
+                        ).encode(),
+                        peer,
+                    )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": advertisement_id,
+                                "device_id": DEVICE_ID,
+                                "ack_for": "DETAIL",
+                            }
+                        ).encode(),
+                        peer,
+                    )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": advertisement_id,
                                 "device_id": DEVICE_ID,
                                 "ack_for": "ADVERTISE",
                             }
@@ -82,6 +104,28 @@ class SenderTests(unittest.TestCase):
                     detail_id = detail["message_id"]
                     received.append((detail, detail_peer))
 
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": detail_id,
+                                "device_id": "00:11:22:33:44:55",
+                                "ack_for": "DETAIL",
+                            }
+                        ).encode(),
+                        detail_peer,
+                    )
+                    ack_socket.sendto(
+                        json.dumps(
+                            {
+                                "message_type": "ACK",
+                                "message_id": detail_id,
+                                "device_id": DEVICE_ID,
+                                "ack_for": "ADVERTISE",
+                            }
+                        ).encode(),
+                        detail_peer,
+                    )
                     ack_socket.sendto(
                         json.dumps(
                             {
@@ -126,15 +170,17 @@ class SenderTests(unittest.TestCase):
         thread = threading.Thread(target=responder, daemon=True)
         thread.start()
         self.assertTrue(ready.wait(1.0))
-        succeeded = sender.advertise(
-            DEVICE_ID,
-            "127.0.0.1",
-            8554,
-            "/stream",
-            timeout=1.5,
-            start_port=port,
-            broadcast_address="127.0.0.1",
-        )
+        # The public API always broadcasts per SRS.  Patch only the private
+        # transport constant so this single-host socket test can use loopback.
+        with mock.patch("ynb.sender._BROADCAST_ADDRESS", "127.0.0.1"):
+            succeeded = sender.advertise(
+                DEVICE_ID,
+                "127.0.0.1",
+                8554,
+                "/stream",
+                timeout=1.5,
+                start_port=port,
+            )
         thread.join(2.0)
 
         self.assertFalse(thread.is_alive())
@@ -229,15 +275,15 @@ class SenderTests(unittest.TestCase):
         thread = threading.Thread(target=responder, daemon=True)
         thread.start()
         self.assertTrue(ready.wait(1.0))
-        succeeded = sender.advertise(
-            DEVICE_ID,
-            "127.0.0.1",
-            8554,
-            "/stream",
-            timeout=0.2,
-            start_port=port,
-            broadcast_address="127.0.0.1",
-        )
+        with mock.patch("ynb.sender._BROADCAST_ADDRESS", "127.0.0.1"):
+            succeeded = sender.advertise(
+                DEVICE_ID,
+                "127.0.0.1",
+                8554,
+                "/stream",
+                timeout=0.2,
+                start_port=port,
+            )
         thread.join(1.0)
 
         self.assertFalse(thread.is_alive())
@@ -281,6 +327,42 @@ class SenderTests(unittest.TestCase):
             },
         )
 
+    def test_advertisement_retries_ten_times_in_three_second_windows(self) -> None:
+        """No ACK causes ten broadcasts sharing one ID over the 30s budget."""
+
+        udp_socket = mock.MagicMock()
+        socket_context = mock.MagicMock()
+        socket_context.__enter__.return_value = udp_socket
+        socket_context.__exit__.return_value = False
+        monotonic_values = [0.0]
+        for attempt in range(10):
+            monotonic_values.extend((attempt * 3.0, (attempt + 1) * 3.0))
+
+        with (
+            mock.patch("ynb.sender.socket.socket", return_value=socket_context),
+            mock.patch("ynb.sender.time.monotonic", side_effect=monotonic_values),
+            mock.patch(
+                "ynb.sender._wait_for_matching_ack", return_value=None
+            ) as wait,
+        ):
+            succeeded = sender.advertise(
+                DEVICE_ID,
+                "127.0.0.1",
+                8554,
+                "/stream",
+            )
+
+        self.assertFalse(succeeded)
+        self.assertEqual(udp_socket.sendto.call_count, 10)
+        payloads = [call.args[0] for call in udp_socket.sendto.call_args_list]
+        targets = [call.args[1] for call in udp_socket.sendto.call_args_list]
+        self.assertTrue(all(payload == payloads[0] for payload in payloads))
+        self.assertEqual(targets, [("255.255.255.255", 37_020)] * 10)
+        self.assertEqual(
+            [call.kwargs["deadline"] for call in wait.call_args_list],
+            [3.0 * attempt for attempt in range(1, 11)],
+        )
+
     def test_platform_timeout_overflow_returns_false(self) -> None:
         """UDP socket이 큰 timeout을 거부해도 False로 끝나야 한다."""
 
@@ -298,20 +380,41 @@ class SenderTests(unittest.TestCase):
                     8554,
                     "/stream",
                     timeout=1e308,
-                    broadcast_address="127.0.0.1",
                 )
             )
 
-    def test_invalid_configuration_is_rejected_before_socket_creation(self) -> None:
-        with mock.patch("ynb.sender.socket.socket") as socket_factory:
-            with self.assertRaises(ValueError):
-                sender.advertise("bad-device", "127.0.0.1", 8554, "/stream")
-        socket_factory.assert_not_called()
+    def test_public_api_cannot_replace_broadcast_with_unicast(self) -> None:
+        """CON-004: callers cannot redirect ADVERTISE to a unicast address."""
 
         with mock.patch("ynb.sender.socket.socket") as socket_factory:
-            with self.assertRaises(ValueError):
-                sender.advertise(DEVICE_ID, "127.0.0.1", 8554, "/\ud800")
+            with self.assertRaises(TypeError):
+                sender.advertise(
+                    DEVICE_ID,
+                    "127.0.0.1",
+                    8554,
+                    "/stream",
+                    broadcast_address="127.0.0.1",  # type: ignore[call-arg]
+                )
         socket_factory.assert_not_called()
+
+    def test_invalid_configuration_is_rejected_before_socket_creation(self) -> None:
+        invalid_endpoints = (
+            ("bad-device", "127.0.0.1", 8554, "/stream"),
+            (DEVICE_ID, "localhost", 8554, "/stream"),
+            (DEVICE_ID, "127.0.0.1", 0, "/stream"),
+            (DEVICE_ID, "127.0.0.1", 65_536, "/stream"),
+            (DEVICE_ID, "127.0.0.1", True, "/stream"),
+            (DEVICE_ID, "127.0.0.1", 8554, "stream"),
+            (DEVICE_ID, "127.0.0.1", 8554, "/line\nbreak"),
+            (DEVICE_ID, "127.0.0.1", 8554, "/\ud800"),
+        )
+
+        for endpoint in invalid_endpoints:
+            with self.subTest(endpoint=endpoint):
+                with mock.patch("ynb.sender.socket.socket") as socket_factory:
+                    with self.assertRaises(ValueError):
+                        sender.advertise(*endpoint)
+                socket_factory.assert_not_called()
 
 
 if __name__ == "__main__":

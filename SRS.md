@@ -55,7 +55,7 @@ Sender                         Receiver                    RTSP Server
 
 0.0.1에서는 다음 기능을 구현하지 않는다.
 
-* 메시지 재전송
+* DETAIL 메시지 또는 DETAIL ACK 재전송
 * `message_id`를 이용한 중복 메시지 제거 또는 replay 방지
 * UDP 패킷 재정렬 처리
 * 장비 상태 registry
@@ -206,7 +206,7 @@ ID를 사용한다. Receiver는 ACK에 대상 메시지의 ID를 그대로 복�
 | ID         | 요구사항                                                                                         |
 | ---------- | -------------------------------------------------------------------------------------------- |
 | FR-SND-001 | Sender는 `device_id`와 새 `message_id`를 포함한 ADVERTISE 메시지를 생성하여야 한다.                              |
-| FR-SND-002 | Sender는 ADVERTISE를 설정된 UDP start port로 broadcast하여야 한다.                                      |
+| FR-SND-002 | Sender는 유효한 ACK을 받을 때까지 동일 ADVERTISE를 설정된 UDP start port로 3초 간격, 최대 10회 broadcast하여야 한다. |
 | FR-SND-003 | Sender는 ADVERTISE 전송 후 ACK를 수신할 수 있어야 한다.                                                    |
 | FR-SND-004 | `ack_for="ADVERTISE"`이고 `device_id`와 `message_id`가 ADVERTISE와 일치하는 유효한 ACK를 수신하면 해당 ACK의 peer 주소를 Receiver 주소로 사용하여야 한다. |
 | FR-SND-005 | Sender는 해당 Receiver에 새 `message_id`, `device_id`, `ip`, `rtsp_port`, `rtsp_path`를 포함한 DETAIL을 unicast하여야 한다. |
@@ -226,6 +226,7 @@ ID를 사용한다. Receiver는 ACK에 대상 메시지의 ID를 그대로 복�
 | FR-RCV-006 | DETAIL ACK 전송 후 광고된 endpoint에 RTSP probe를 수행하여야 한다.                            |
 | FR-RCV-007 | `discover(timeout)`은 지정된 시간 안에 정상적인 정보 교환이 완료되지 않으면 결과 없음으로 종료하여야 한다.          |
 | FR-RCV-008 | 잘못된 UDP 입력은 Receiver 전체를 종료시키지 않아야 한다.                                         |
+| FR-RCV-009 | Receiver는 첫 유효 ADVERTISE의 `device_id`와 실제 peer만 선택하고, 완료 또는 timeout까지 다른 장비를 무시하여야 한다. 동일한 선택 ADVERTISE가 재수신되면 ACK를 다시 전송하여야 한다. |
 
 ## 7. RTSP probe 요구사항
 
@@ -247,6 +248,7 @@ ID를 사용한다. Receiver는 ACK에 대상 메시지의 ID를 그대로 복�
 | FR-API-002 | `sender.py`는 ADVERTISE → ACK → DETAIL → ACK 교환을 수행하는 공개 기능을 제공하여야 한다. |
 | FR-API-003 | `receiver.py`는 `discover(timeout)` 형태의 발견 기능을 제공하여야 한다.               |
 | FR-API-004 | RTSP URI 생성과 RTSP probe 기능은 `connecter.py`에 배치하여야 한다.                 |
+| FR-API-005 | Sender, Receiver, RTSP probe의 timeout 기본값은 `30`초여야 한다.                    |
 
 ## 9. 결과 데이터 요구사항
 
@@ -376,9 +378,10 @@ Sender                         Receiver                  Fake RTSP Server
 ## 12. 알려진 제한
 
 * UDP 데이터그램의 전달 성공을 보장하지 않는다.
-* ACK 유실 시 자동 재전송하지 않는다.
+* ADVERTISE ACK가 없으면 동일 ADVERTISE를 3초 간격으로 최대 10회 재전송한다.
+* DETAIL 또는 DETAIL ACK 유실 시 자동 재전송하지 않는다.
 * 메시지 중복 및 순서 변경을 별도로 처리하지 않는다.
-* `message_id`는 ACK 상관관계에만 사용하며 중복 제거, 재전송 또는 replay 방지를 제공하지 않는다.
+* `message_id`는 ACK 상관관계와 동일 ADVERTISE 재전송 식별에만 사용하며 중복 제거 또는 replay 방지를 제공하지 않는다.
 * 장비의 장기 상태를 유지하지 않는다.
 * MAC 주소 변경 시 동일 장비도 다른 `device_id`로 인식될 수 있다.
 * RTSP `OPTIONS` 성공은 실제 영상 재생 성공을 보장하지 않는다.
