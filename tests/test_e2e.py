@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 import unittest
+from unittest import mock
 
 from ynb import receiver, sender
 
@@ -33,15 +34,17 @@ class EndToEndTests(unittest.TestCase):
             )
             receiver_thread.start()
             time.sleep(0.05)
-            acknowledged = sender.advertise(
-                DEVICE_ID,
-                "127.0.0.1",
-                rtsp_server.port,
-                "/stream",
-                timeout=1.5,
-                start_port=discovery_port,
-                broadcast_address="127.0.0.1",
-            )
+            # Preserve a deterministic single-host E2E test without exposing
+            # a public unicast escape hatch from the SRS broadcast contract.
+            with mock.patch("ynb.sender._BROADCAST_ADDRESS", "127.0.0.1"):
+                acknowledged = sender.advertise(
+                    DEVICE_ID,
+                    "127.0.0.1",
+                    rtsp_server.port,
+                    "/stream",
+                    timeout=1.5,
+                    start_port=discovery_port,
+                )
             receiver_thread.join(2.0)
             self.assertFalse(receiver_thread.is_alive())
             result = results.get_nowait()
@@ -70,6 +73,30 @@ class EndToEndTests(unittest.TestCase):
         acknowledged, result, rtsp_port = self._run_exchange(
             "RTSP/2.0 404 Not Found"
         )
+
+        self.assertTrue(acknowledged)
+        self.assertEqual(
+            result,
+            {
+                "device_id": DEVICE_ID,
+                "ip": "127.0.0.1",
+                "rtsp_port": rtsp_port,
+                "rtsp_path": "/stream",
+                "rtsp_uri": f"rtsp://127.0.0.1:{rtsp_port}/stream",
+                "rtsp_connected": False,
+            },
+        )
+
+    def test_rtsp_probe_exception_is_contained_in_receiver_result(self) -> None:
+        """FR-RTSP-007: a probe failure cannot escape discover()."""
+
+        with mock.patch(
+            "ynb.receiver.connecter.probe_rtsp",
+            side_effect=OSError("simulated probe failure"),
+        ):
+            acknowledged, result, rtsp_port = self._run_exchange(
+                "RTSP/2.0 200 OK"
+            )
 
         self.assertTrue(acknowledged)
         self.assertEqual(

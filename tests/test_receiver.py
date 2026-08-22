@@ -103,6 +103,60 @@ class ReceiverTests(unittest.TestCase):
                     ).encode(),
                     target,
                 )
+                # DETAIL must use a new ID rather than reusing ADVERTISE ID.
+                sender_socket.sendto(
+                    json.dumps(
+                        {
+                            "message_type": "DETAIL",
+                            "message_id": ADVERTISE_ID,
+                            "device_id": DEVICE_ID,
+                            "ip": "127.0.0.1",
+                            "rtsp_port": rtsp_server.port,
+                            "rtsp_path": "/reused-id",
+                        }
+                    ).encode(),
+                    target,
+                )
+                # FR-RCV-004: validate every DETAIL field independently.  Each
+                # packet below has exactly one bad field, so removing any one
+                # validator makes this exchange fail instead of being hidden by
+                # another invalid field.
+                invalid_details = (
+                    {
+                        "message_type": "DETAIL",
+                        "message_id": "not-a-uuid",
+                        "device_id": DEVICE_ID,
+                        "ip": "127.0.0.1",
+                        "rtsp_port": rtsp_server.port,
+                        "rtsp_path": "/bad-message-id",
+                    },
+                    {
+                        "message_type": "DETAIL",
+                        "message_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                        "device_id": DEVICE_ID,
+                        "ip": "localhost",
+                        "rtsp_port": rtsp_server.port,
+                        "rtsp_path": "/bad-ip",
+                    },
+                    {
+                        "message_type": "DETAIL",
+                        "message_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                        "device_id": DEVICE_ID,
+                        "ip": "127.0.0.1",
+                        "rtsp_port": 0,
+                        "rtsp_path": "/bad-port",
+                    },
+                    {
+                        "message_type": "DETAIL",
+                        "message_id": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                        "device_id": DEVICE_ID,
+                        "ip": "127.0.0.1",
+                        "rtsp_port": rtsp_server.port,
+                        "rtsp_path": "bad-path",
+                    },
+                )
+                for invalid_detail in invalid_details:
+                    sender_socket.sendto(json.dumps(invalid_detail).encode(), target)
                 sender_socket.sendto(
                     json.dumps(
                         {

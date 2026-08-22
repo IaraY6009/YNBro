@@ -17,10 +17,15 @@ from ._protocol import (
     make_advertisement,
     make_detail,
     parse_ack,
-    validate_ipv4,
     validate_port,
     validate_timeout,
 )
+
+
+# SRS CON-004 / FR-SND-002 require the first ADVERTISE to use UDP broadcast.
+# This implementation uses the IPv4 limited-broadcast address and intentionally
+# exposes no destination override that could turn the bootstrap into unicast.
+_BROADCAST_ADDRESS = "255.255.255.255"
 
 
 def advertise(
@@ -31,12 +36,11 @@ def advertise(
     *,
     timeout: float = 2.0,
     start_port: int = START_PORT,
-    broadcast_address: str = "255.255.255.255",
 ) -> bool:
-    """Perform the finite UDP bootstrap exchange for one Receiver."""
+    """Perform the SRS UDP broadcast bootstrap exchange for one Receiver."""
 
     timeout_value = validate_timeout(timeout)
-    destination = (validate_ipv4(broadcast_address), validate_port(start_port))
+    destination = (_BROADCAST_ADDRESS, validate_port(start_port))
 
     # Build both packets before creating a socket so invalid endpoint input is
     # rejected before any network activity.
