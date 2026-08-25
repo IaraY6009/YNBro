@@ -1,11 +1,10 @@
-*.egg-info/
+__pycache__/
 *.py[cod]
-.codex*/
+*.egg-info/
 .coverage
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
 .venv/
-__pycache__/
 build/
 dist/
